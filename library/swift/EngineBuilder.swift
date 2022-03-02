@@ -3,7 +3,7 @@ import Foundation
 
 /// Builder used for creating and running a new Engine instance.
 @objcMembers
-public class EngineBuilder: NSObject {
+open class EngineBuilder: NSObject {
   private let base: BaseConfiguration
   private var engineType: EnvoyEngine.Type = EnvoyEngineImpl.self
   private var logLevel: LogLevel = .info
@@ -13,6 +13,7 @@ public class EngineBuilder: NSObject {
     case custom(String)
   }
 
+  private var adminInterfaceEnabled = false
   private var grpcStatsDomain: String?
   private var connectTimeoutSeconds: UInt32 = 30
   private var dnsRefreshSeconds: UInt32 = 60
@@ -20,14 +21,20 @@ public class EngineBuilder: NSObject {
   private var dnsFailureRefreshSecondsMax: UInt32 = 10
   private var dnsQueryTimeoutSeconds: UInt32 = 25
   private var dnsPreresolveHostnames: String = "[]"
+  private var enableHappyEyeballs: Bool = false
+  private var enableInterfaceBinding: Bool = false
+  private var h2ConnectionKeepaliveIdleIntervalMilliseconds: UInt32 = 100000000
+  private var h2ConnectionKeepaliveTimeoutSeconds: UInt32 = 10
   private var statsFlushSeconds: UInt32 = 60
   private var streamIdleTimeoutSeconds: UInt32 = 15
+  private var perTryIdleTimeoutSeconds: UInt32 = 15
   private var appVersion: String = "unspecified"
   private var appId: String = "unspecified"
   private var virtualClusters: String = "[]"
   private var onEngineRunning: (() -> Void)?
   private var logger: ((String) -> Void)?
   private var eventTracker: (([String: String]) -> Void)?
+  private(set) var enableNetworkPathMonitor = false
   private var nativeFilterChain: [EnvoyNativeFilterConfig] = []
   private var platformFilterChain: [EnvoyHTTPFilterFactory] = []
   private var stringAccessors: [String: EnvoyStringAccessor] = [:]
@@ -129,6 +136,55 @@ public class EngineBuilder: NSObject {
     return self
   }
 
+  /// Specify whether to use Happy Eyeballs when multiple IP stacks may be supported.
+  ///
+  /// - parameter enableHappyEyeballs: whether to enable RFC 6555 handling for IPv4/IPv6.
+  ///
+  /// - returns: This builder.
+  @discardableResult
+  public func enableHappyEyeballs(_ enableHappyEyeballs: Bool) -> Self {
+    self.enableHappyEyeballs = enableHappyEyeballs
+    return self
+  }
+
+  /// Specify whether sockets may attempt to bind to a specific interface, based on network
+  /// conditions.
+  ///
+  /// - parameter enableInterfaceBinding: whether to allow interface binding.
+  ///
+  /// - returns: This builder.
+  @discardableResult
+  public func enableInterfaceBinding(_ enableInterfaceBinding: Bool) -> Self {
+    self.enableInterfaceBinding = enableInterfaceBinding
+    return self
+  }
+
+  /// Add a rate at which to ping h2 connections on new stream creation if the connection has
+  /// sat idle.
+  ///
+  /// - parameter h2ConnectionKeepaliveIdleIntervalMilliseconds: Rate in milliseconds.
+  ///
+  /// - returns: This builder.
+  @discardableResult
+  public func addH2ConnectionKeepaliveIdleIntervalMilliseconds(
+    _ h2ConnectionKeepaliveIdleIntervalMilliseconds: UInt32) -> Self {
+    self.h2ConnectionKeepaliveIdleIntervalMilliseconds =
+      h2ConnectionKeepaliveIdleIntervalMilliseconds
+    return self
+  }
+
+  /// Add a rate at which to timeout h2 pings.
+  ///
+  /// - parameter h2ConnectionKeepaliveTimeoutSeconds: Rate in seconds to timeout h2 pings.
+  ///
+  /// - returns: This builder.
+  @discardableResult
+  public func addH2ConnectionKeepaliveTimeoutSeconds(
+    _ h2ConnectionKeepaliveTimeoutSeconds: UInt32) -> Self {
+    self.h2ConnectionKeepaliveTimeoutSeconds = h2ConnectionKeepaliveTimeoutSeconds
+    return self
+  }
+
   /// Add an interval at which to flush Envoy stats.
   ///
   /// - parameter statsFlushSeconds: Interval at which to flush Envoy stats.
@@ -148,6 +204,17 @@ public class EngineBuilder: NSObject {
   @discardableResult
   public func addStreamIdleTimeoutSeconds(_ streamIdleTimeoutSeconds: UInt32) -> Self {
     self.streamIdleTimeoutSeconds = streamIdleTimeoutSeconds
+    return self
+  }
+
+  /// Add a custom per try idle timeout for HTTP streams. Defaults to 15 seconds.
+  ///
+  /// - parameter perTryIdleSeconds: Idle timeout for HTTP streams.
+  ///
+  /// - returns: This builder.
+  @discardableResult
+  public func addPerTryIdleTimeoutSeconds(_ perTryIdleTimeoutSeconds: UInt32) -> Self {
+    self.perTryIdleTimeoutSeconds = perTryIdleTimeoutSeconds
     return self
   }
 
@@ -240,6 +307,16 @@ public class EngineBuilder: NSObject {
     return self
   }
 
+  /// Configure the engine to use `NWPathMonitor` to observe network reachability.
+  ///
+  /// - returns: This builder.
+  @discardableResult
+  @available(iOS 12, *)
+  public func enableNetworkPathMonitor(_ enableNetworkPathMonitor: Bool) -> Self {
+    self.enableNetworkPathMonitor = enableNetworkPathMonitor
+    return self
+  }
+
   /// Add the App Version of the App using this Envoy Client.
   ///
   /// - parameter appVersion: The version.
@@ -266,10 +343,21 @@ public class EngineBuilder: NSObject {
   ///
   /// - parameter virtualClusters: The JSON configuration string for virtual clusters.
   ///
-  /// returns: This builder.
+  /// - returns: This builder.
   @discardableResult
   public func addVirtualClusters(_ virtualClusters: String) -> Self {
     self.virtualClusters = virtualClusters
+    return self
+  }
+
+  /// Enable admin interface on 127.0.0.1:9901 address. Admin interface is intended to be
+  /// used for development/debugging purposes only. Enabling it in production may open
+  /// your app to security vulnerabilities.
+  ///
+  /// - returns: This builder.
+  @discardableResult
+  public func enableAdminInterface() -> Self {
+    self.adminInterfaceEnabled = true
     return self
   }
 
@@ -277,8 +365,10 @@ public class EngineBuilder: NSObject {
   ///
   public func build() -> Engine {
     let engine = self.engineType.init(runningCallback: self.onEngineRunning, logger: self.logger,
-                                      eventTracker: self.eventTracker)
+                                      eventTracker: self.eventTracker,
+                                      enableNetworkPathMonitor: self.enableNetworkPathMonitor)
     let config = EnvoyConfiguration(
+      adminInterfaceEnabled: self.adminInterfaceEnabled,
       grpcStatsDomain: self.grpcStatsDomain,
       connectTimeoutSeconds: self.connectTimeoutSeconds,
       dnsRefreshSeconds: self.dnsRefreshSeconds,
@@ -286,8 +376,14 @@ public class EngineBuilder: NSObject {
       dnsFailureRefreshSecondsMax: self.dnsFailureRefreshSecondsMax,
       dnsQueryTimeoutSeconds: self.dnsQueryTimeoutSeconds,
       dnsPreresolveHostnames: self.dnsPreresolveHostnames,
+      enableHappyEyeballs: self.enableHappyEyeballs,
+      enableInterfaceBinding: self.enableInterfaceBinding,
+      h2ConnectionKeepaliveIdleIntervalMilliseconds:
+        self.h2ConnectionKeepaliveIdleIntervalMilliseconds,
+      h2ConnectionKeepaliveTimeoutSeconds: self.h2ConnectionKeepaliveTimeoutSeconds,
       statsFlushSeconds: self.statsFlushSeconds,
       streamIdleTimeoutSeconds: self.streamIdleTimeoutSeconds,
+      perTryIdleTimeoutSeconds: self.perTryIdleTimeoutSeconds,
       appVersion: self.appVersion,
       appId: self.appId,
       virtualClusters: self.virtualClusters,
@@ -315,7 +411,7 @@ public class EngineBuilder: NSObject {
   /// Add a specific implementation of `EnvoyEngine` to use for starting Envoy.
   /// A new instance of this engine will be created when `build()` is called.
   /// Used for testing, as initializing with `EnvoyEngine.Type` results in a
-  /// segfault: https://github.com/lyft/envoy-mobile/issues/334
+  /// segfault: https://github.com/envoyproxy/envoy-mobile/issues/334
   @discardableResult
   func addEngineType(_ engineType: EnvoyEngine.Type) -> Self {
     self.engineType = engineType

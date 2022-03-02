@@ -9,11 +9,13 @@
 #include "source/common/common/utility.h"
 
 #include "library/common/api/external.h"
+#include "library/common/bridge/utility.h"
 #include "library/common/buffer/bridge_fragment.h"
 #include "library/common/data/utility.h"
 #include "library/common/extensions/filters/http/platform_bridge/c_type_definitions.h"
 #include "library/common/http/header_utility.h"
 #include "library/common/http/headers.h"
+#include "library/common/stream_info/extra_stream_info.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -31,6 +33,7 @@ void replaceHeaders(Http::HeaderMap& headers, envoy_headers c_headers) {
   // The C envoy_headers struct can be released now because the headers have been copied.
   release_envoy_headers(c_headers);
 }
+
 } // namespace
 
 static void envoy_filter_release_callbacks(const void* context) {
@@ -147,10 +150,21 @@ void PlatformBridgeFilter::onDestroy() {
   ENVOY_LOG(trace, "PlatformBridgeFilter({})::onDestroy", filter_name_);
   alive_ = false;
 
-  // If the filter chain is destroyed before a response is received, treat as cancellation.
-  if (!response_filter_base_->state_.stream_complete_ && platform_filter_.on_cancel) {
+  auto& info = decoder_callbacks_->streamInfo();
+  if (response_filter_base_->state_.stream_complete_ && platform_filter_.on_error &&
+      StreamInfo::isStreamIdleTimeout(info)) {
+    // If the stream info has a response code details with a stream idle timeout, treat as error.
+    ENVOY_LOG(trace, "PlatformBridgeFilter({})->on_error", filter_name_);
+    envoy_data error_message = Data::Utility::copyToBridgeData("Stream idle timeout");
+    auto& info = decoder_callbacks_->streamInfo();
+    int32_t attempts = static_cast<int32_t>(info.attemptCount().value_or(0));
+    platform_filter_.on_error({ENVOY_REQUEST_TIMEOUT, error_message, attempts}, streamIntel(),
+                              finalStreamIntel(), platform_filter_.instance_context);
+  } else if (!response_filter_base_->state_.stream_complete_ && platform_filter_.on_cancel) {
+    // If the filter chain is destroyed before a response is received, treat as cancellation.
     ENVOY_LOG(trace, "PlatformBridgeFilter({})->on_cancel", filter_name_);
-    platform_filter_.on_cancel(platform_filter_.instance_context);
+    platform_filter_.on_cancel(streamIntel(), finalStreamIntel(),
+                               platform_filter_.instance_context);
   }
 
   // Allow nullptr as no-op only if nothing was initialized.
@@ -163,6 +177,48 @@ void PlatformBridgeFilter::onDestroy() {
   ENVOY_LOG(trace, "PlatformBridgeFilter({})->release_filter", filter_name_);
   platform_filter_.release_filter(platform_filter_.instance_context);
   platform_filter_.instance_context = nullptr;
+}
+
+Http::LocalErrorStatus PlatformBridgeFilter::onLocalReply(const LocalReplyData& reply) {
+  ENVOY_LOG(trace, "PlatformBridgeFilter({})::onLocalReply", filter_name_);
+  response_filter_base_->state_.stream_complete_ = true;
+  auto& info = decoder_callbacks_->streamInfo();
+  // TODO(goaway): set responseCode in upstream Envoy when responseCodDetails are set.
+  // ASSERT(static_cast<uint32_t>(reply.code_) == info.responseCode());
+  // TODO(goaway): follow up on the underscore discrepancy between these values.
+  // ASSERT(reply.details_ == info.responseCodeDetails());
+
+  if (platform_filter_.on_error) {
+    envoy_error_code_t error_code = Bridge::Utility::errorCodeFromLocalStatus(reply.code_);
+    envoy_data error_message = Data::Utility::copyToBridgeData(reply.details_);
+    int32_t attempts = static_cast<int32_t>(info.attemptCount().value_or(0));
+    platform_filter_.on_error({error_code, error_message, attempts}, streamIntel(),
+                              finalStreamIntel(), platform_filter_.instance_context);
+  }
+
+  return Http::LocalErrorStatus::ContinueAndResetStream;
+}
+
+envoy_final_stream_intel PlatformBridgeFilter::finalStreamIntel() {
+  RELEASE_ASSERT(decoder_callbacks_, "StreamInfo accessed before filter callbacks are set");
+  // FIXME: Stream handle cannot currently be set from the filter context.
+  envoy_final_stream_intel final_stream_intel{-1, -1, -1, -1, -1, -1, -1, -1,
+                                              -1, -1, -1, 0,  0,  0,  0};
+  setFinalStreamIntel(decoder_callbacks_->streamInfo(), dispatcher_.timeSource(),
+                      final_stream_intel);
+  return final_stream_intel;
+}
+
+envoy_stream_intel PlatformBridgeFilter::streamIntel() {
+  RELEASE_ASSERT(decoder_callbacks_, "StreamInfo accessed before filter callbacks are set");
+  auto& info = decoder_callbacks_->streamInfo();
+  // FIXME: Stream handle cannot currently be set from the filter context.
+  envoy_stream_intel stream_intel{-1, -1, 0, 0};
+  if (info.upstreamInfo()) {
+    stream_intel.connection_id = info.upstreamInfo()->upstreamConnectionId().value_or(-1);
+  }
+  stream_intel.attempt_count = info.attemptCount().value_or(0);
+  return stream_intel;
 }
 
 void PlatformBridgeFilter::dumpState(std::ostream& os, int indent_level) const {
@@ -202,7 +258,7 @@ Http::FilterHeadersStatus PlatformBridgeFilter::FilterBase::onHeaders(Http::Head
   envoy_headers in_headers = Http::Utility::toBridgeHeaders(headers);
   ENVOY_LOG(trace, "PlatformBridgeFilter({})->on_*_headers", parent_.filter_name_);
   envoy_filter_headers_status result =
-      on_headers_(in_headers, end_stream, parent_.platform_filter_.instance_context);
+      on_headers_(in_headers, end_stream, streamIntel(), parent_.platform_filter_.instance_context);
   state_.on_headers_called_ = true;
 
   switch (result.status) {
@@ -221,7 +277,7 @@ Http::FilterHeadersStatus PlatformBridgeFilter::FilterBase::onHeaders(Http::Head
     PANIC("invalid filter state: unsupported status for platform filters");
   }
 
-  NOT_REACHED_GCOVR_EXCL_LINE;
+  PANIC("not reached");
 }
 
 Http::FilterDataStatus PlatformBridgeFilter::FilterBase::onData(Buffer::Instance& data,
@@ -251,7 +307,7 @@ Http::FilterDataStatus PlatformBridgeFilter::FilterBase::onData(Buffer::Instance
 
   ENVOY_LOG(trace, "PlatformBridgeFilter({})->on_*_data", parent_.filter_name_);
   envoy_filter_data_status result =
-      on_data_(in_data, end_stream, parent_.platform_filter_.instance_context);
+      on_data_(in_data, end_stream, streamIntel(), parent_.platform_filter_.instance_context);
   state_.on_data_called_ = true;
 
   switch (result.status) {
@@ -317,7 +373,7 @@ Http::FilterDataStatus PlatformBridgeFilter::FilterBase::onData(Buffer::Instance
     PANIC("invalid filter state: unsupported status for platform filters");
   }
 
-  NOT_REACHED_GCOVR_EXCL_LINE;
+  PANIC("not reached");
 }
 
 Http::FilterTrailersStatus PlatformBridgeFilter::FilterBase::onTrailers(Http::HeaderMap& trailers) {
@@ -334,7 +390,7 @@ Http::FilterTrailersStatus PlatformBridgeFilter::FilterBase::onTrailers(Http::He
   envoy_headers in_trailers = Http::Utility::toBridgeHeaders(trailers);
   ENVOY_LOG(trace, "PlatformBridgeFilter({})->on_*_trailers", parent_.filter_name_);
   envoy_filter_trailers_status result =
-      on_trailers_(in_trailers, parent_.platform_filter_.instance_context);
+      on_trailers_(in_trailers, streamIntel(), parent_.platform_filter_.instance_context);
   state_.on_trailers_called_ = true;
 
   switch (result.status) {
@@ -382,7 +438,7 @@ Http::FilterTrailersStatus PlatformBridgeFilter::FilterBase::onTrailers(Http::He
     PANIC("invalid filter state: unsupported status for platform filters");
   }
 
-  NOT_REACHED_GCOVR_EXCL_LINE;
+  PANIC("not reached");
 }
 
 Http::FilterHeadersStatus PlatformBridgeFilter::decodeHeaders(Http::RequestHeaderMap& headers,
@@ -430,8 +486,8 @@ Http::FilterHeadersStatus PlatformBridgeFilter::encodeHeaders(Http::ResponseHead
   }
 
   if (platform_filter_.on_error) {
-    platform_filter_.on_error({error_code, error_message, attempt_count},
-                              platform_filter_.instance_context);
+    platform_filter_.on_error({error_code, error_message, attempt_count}, streamIntel(),
+                              finalStreamIntel(), platform_filter_.instance_context);
   } else {
     release_envoy_data(error_message);
   }
@@ -493,7 +549,7 @@ void PlatformBridgeFilter::resumeDecoding() {
   // 1) adding support to Envoy for (optionally) retaining the dispatcher, or
   // 2) retaining the engine to transitively retain the dispatcher via Envoy's ownership graph, or
   // 3) dispatching via a safe intermediary
-  // Relevant: https://github.com/lyft/envoy-mobile/issues/332
+  // Relevant: https://github.com/envoyproxy/envoy-mobile/issues/332
   dispatcher_.post([weak_self]() -> void {
     if (auto self = weak_self.lock()) {
       // Delegate to base implementation for request and response path.
@@ -561,7 +617,7 @@ void PlatformBridgeFilter::FilterBase::onResume() {
   ENVOY_LOG(trace, "PlatformBridgeFilter({})->on_resume_*", parent_.filter_name_);
   envoy_filter_resume_status result =
       on_resume_(pending_headers, pending_data, pending_trailers, state_.stream_complete_,
-                 parent_.platform_filter_.instance_context);
+                 streamIntel(), parent_.platform_filter_.instance_context);
   state_.on_resume_called_ = true;
 
   if (result.status == kEnvoyFilterResumeStatusStopIteration) {

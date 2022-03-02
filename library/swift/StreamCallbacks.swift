@@ -7,11 +7,15 @@ import Foundation
 ///
 /// `StreamCallbacks` are bridged through to `EnvoyHTTPCallbacks` to communicate with the engine.
 final class StreamCallbacks {
-  var onHeaders: ((_ headers: ResponseHeaders, _ endStream: Bool) -> Void)?
-  var onData: ((_ body: Data, _ endStream: Bool) -> Void)?
-  var onTrailers: ((_ trailers: ResponseTrailers) -> Void)?
-  var onCancel: (() -> Void)?
-  var onError: ((_ error: EnvoyError) -> Void)?
+  var onHeaders: (
+    (_ headers: ResponseHeaders, _ endStream: Bool, _ streamIntel: StreamIntel) -> Void
+  )?
+  var onData: ((_ body: Data, _ endStream: Bool, _ streamIntel: StreamIntel) -> Void)?
+  var onTrailers: ((_ trailers: ResponseTrailers, _ streamIntel: StreamIntel) -> Void)?
+  var onSendWindowAvailable: ((_ streamintel: StreamIntel) -> Void)?
+  var onComplete: ((_ streamintel: FinalStreamIntel) -> Void)?
+  var onCancel: ((_ streamintel: FinalStreamIntel) -> Void)?
+  var onError: ((_ error: EnvoyError, _ streamIntel: FinalStreamIntel) -> Void)?
 }
 
 extension EnvoyHTTPCallbacks {
@@ -22,16 +26,18 @@ extension EnvoyHTTPCallbacks {
   convenience init(callbacks: StreamCallbacks, queue: DispatchQueue) {
     self.init()
     self.dispatchQueue = queue
-    self.onHeaders = { callbacks.onHeaders?(ResponseHeaders(headers: $0), $1) }
-    self.onData = { callbacks.onData?($0, $1) }
-    self.onTrailers = { callbacks.onTrailers?(ResponseTrailers(headers: $0)) }
-    self.onCancel = { callbacks.onCancel?() }
-    self.onError = { errorCode, message, attemptCount in
+    self.onHeaders = { callbacks.onHeaders?(ResponseHeaders(headers: $0), $1, StreamIntel($2)) }
+    self.onData = { callbacks.onData?($0, $1, StreamIntel($2)) }
+    self.onTrailers = { callbacks.onTrailers?(ResponseTrailers(headers: $0), StreamIntel($1)) }
+    self.onSendWindowAvailable = { callbacks.onSendWindowAvailable?(StreamIntel($0)) }
+    self.onComplete = { callbacks.onCancel?(FinalStreamIntel($0, $1)) }
+    self.onCancel = { callbacks.onCancel?(FinalStreamIntel($0, $1)) }
+    self.onError = { errorCode, message, attemptCount, streamIntel, finalStreamIntel in
       // The initializer below will return nil if `attemptCount` is negative.
       // This is the desired behavior because the bridge layer uses -1 to signify absence.
       let error = EnvoyError(errorCode: errorCode, message: message,
                              attemptCount: UInt32(exactly: attemptCount), cause: nil)
-      callbacks.onError?(error)
+      callbacks.onError?(error, FinalStreamIntel(streamIntel, finalStreamIntel))
     }
   }
 }

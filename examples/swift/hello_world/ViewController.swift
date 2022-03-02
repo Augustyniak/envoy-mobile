@@ -24,8 +24,6 @@ final class ViewController: UITableViewController {
       .addPlatformFilter(AsyncDemoFilter.init)
       // swiftlint:disable:next line_length
       .addNativeFilter(name: "envoy.filters.http.buffer", typedConfig: "{\"@type\":\"type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer\",\"max_request_bytes\":5242880}")
-      // swiftlint:disable:next line_length
-      .addNativeFilter(name: "envoy.filters.http.test_accessor", typedConfig: "{\"@type\":\"type.googleapis.com/envoymobile.extensions.filters.http.test_accessor.TestAccessor\",\"accessor_name\":\"demo-accessor\",\"expected_string\":\"PlatformString\"}")
       .setOnEngineRunning { NSLog("Envoy async internal setup completed") }
       .addStringAccessor(name: "demo-accessor", accessor: { return "PlatformString" })
       .setEventTracker { NSLog("Envoy event emitted: \($0)") }
@@ -68,7 +66,7 @@ final class ViewController: UITableViewController {
 
     streamClient
       .newStreamPrototype()
-      .setOnResponseHeaders { [weak self] headers, _ in
+      .setOnResponseHeaders { [weak self] headers, _, _ in
         let statusCode = headers.httpStatus.map(String.init) ?? "nil"
         let message = "received headers with status \(statusCode)"
 
@@ -89,7 +87,7 @@ final class ViewController: UITableViewController {
                                 headerMessage: headerMessage)
         self?.add(result: .success(response))
       }
-      .setOnError { [weak self] error in
+      .setOnError { [weak self] error, _ in
         let message: String
         if let attemptCount = error.attemptCount {
           message = "failed within Envoy library after \(attemptCount) attempts: \(error.message)"

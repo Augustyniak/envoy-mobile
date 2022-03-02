@@ -152,7 +152,6 @@ public class CronetUrlRequestTest {
   @Test
   @SmallTest
   @Feature({"Cronet"})
-  @Ignore("https://github.com/envoyproxy/envoy-mobile/issues/1540")
   public void testSimpleGet() throws Exception {
     String url = NativeTestServer.getEchoMethodURL();
     TestUrlRequestCallback callback = startAndWaitForComplete(url);
@@ -162,8 +161,8 @@ public class CronetUrlRequestTest {
     assertEquals(0, callback.mRedirectCount);
     assertEquals(callback.mResponseStep, ResponseStep.ON_SUCCEEDED);
     UrlResponseInfo urlResponseInfo =
-        createUrlResponseInfo(new String[] {url}, "OK", 200, 86, "connection", "close",
-                              "content-length", "3", "content-type", "text/plain");
+        createUrlResponseInfo(new String[] {url}, "OK", 200, 86, "Connection", "close",
+                              "Content-Length", "3", "Content-Type", "text/plain");
     mTestRule.assertResponseEquals(urlResponseInfo, callback.mResponseInfo);
     checkResponseInfo(callback.mResponseInfo, NativeTestServer.getEchoMethodURL(), 200, "OK");
   }
@@ -200,7 +199,6 @@ public class CronetUrlRequestTest {
   @Test
   @SmallTest
   @Feature({"Cronet"})
-  @Ignore("https://github.com/envoyproxy/envoy-mobile/issues/1426")
   public void testRedirectAsync() throws Exception {
     // Start the request and wait to see the redirect.
     TestUrlRequestCallback callback = new TestUrlRequestCallback();
@@ -222,8 +220,8 @@ public class CronetUrlRequestTest {
                             "header-value");
 
     UrlResponseInfo expected = createUrlResponseInfo(
-        new String[] {NativeTestServer.getRedirectURL()}, "Found", 302, 73, "content-length", "92",
-        "location", "/success.txt", "redirect-header", "header-value");
+        new String[] {NativeTestServer.getRedirectURL()}, "Found", 302, 72, "Content-Length", "92",
+        "Location", "/success.txt", "redirect-header", "header-value");
     mTestRule.assertResponseEquals(expected, callback.mRedirectResponseInfoList.get(0));
 
     // Wait for an unrelated request to finish. The request should not
@@ -268,10 +266,11 @@ public class CronetUrlRequestTest {
     assertEquals(ResponseStep.ON_SUCCEEDED, callback.mResponseStep);
     assertEquals(NativeTestServer.SUCCESS_BODY, callback.mResponseAsString);
 
+    // Original bytesReceived: 258
     UrlResponseInfo urlResponseInfo = createUrlResponseInfo(
         new String[] {NativeTestServer.getRedirectURL(), NativeTestServer.getSuccessURL()}, "OK",
-        200, 258, "content-length", "20", "content-type", "text/plain",
-        "access-control-allow-origin", "*", "header-name", "header-value", "multi-header-name",
+        200, 284, "Content-Length", "20", "Content-Type", "text/plain",
+        "Access-Control-Allow-Origin", "*", "header-name", "header-value", "multi-header-name",
         "header-value1", "multi-header-name", "header-value2");
 
     mTestRule.assertResponseEquals(urlResponseInfo, callback.mResponseInfo);
@@ -643,11 +642,11 @@ public class CronetUrlRequestTest {
     assertEquals(200, callback.mResponseInfo.getHttpStatusCode());
     List<Map.Entry<String, String>> responseHeaders = callback.mResponseInfo.getAllHeadersAsList();
 
-    assertEquals(responseHeaders.get(0), new AbstractMap.SimpleEntry<>("content-length", "20"));
+    assertEquals(responseHeaders.get(0), new AbstractMap.SimpleEntry<>("Content-Length", "20"));
     assertEquals(responseHeaders.get(1),
-                 new AbstractMap.SimpleEntry<>("content-type", "text/plain"));
+                 new AbstractMap.SimpleEntry<>("Content-Type", "text/plain"));
     assertEquals(responseHeaders.get(2),
-                 new AbstractMap.SimpleEntry<>("access-control-allow-origin", "*"));
+                 new AbstractMap.SimpleEntry<>("Access-Control-Allow-Origin", "*"));
     assertEquals(responseHeaders.get(3),
                  new AbstractMap.SimpleEntry<>("header-name", "header-value"));
     assertEquals(responseHeaders.get(4),
@@ -659,7 +658,6 @@ public class CronetUrlRequestTest {
   @Test
   @SmallTest
   @Feature({"Cronet"})
-  @Ignore("https://github.com/envoyproxy/envoy-mobile/issues/1426")
   public void testMockMultiRedirect() throws Exception {
     TestUrlRequestCallback callback =
         startAndWaitForComplete(NativeTestServer.getMultiRedirectURL());
@@ -669,18 +667,20 @@ public class CronetUrlRequestTest {
     assertEquals(2, callback.mRedirectResponseInfoList.size());
 
     // Check first redirect (multiredirect.html -> redirect.html)
+    // Original receivedBytes: 76
     UrlResponseInfo firstExpectedResponseInfo = createUrlResponseInfo(
-        new String[] {NativeTestServer.getMultiRedirectURL()}, "Found", 302, 76, "content-length",
-        "92", "location", "/redirect.html", "redirect-header0", "header-value");
+        new String[] {NativeTestServer.getMultiRedirectURL()}, "Found", 302, 75, "Content-Length",
+        "92", "Location", "/redirect.html", "redirect-header0", "header-value");
     UrlResponseInfo firstRedirectResponseInfo = callback.mRedirectResponseInfoList.get(0);
     mTestRule.assertResponseEquals(firstExpectedResponseInfo, firstRedirectResponseInfo);
 
     // Check second redirect (redirect.html -> success.txt)
+    // Original receivedBytes: 334
     UrlResponseInfo secondExpectedResponseInfo = createUrlResponseInfo(
         new String[] {NativeTestServer.getMultiRedirectURL(), NativeTestServer.getRedirectURL(),
                       NativeTestServer.getSuccessURL()},
-        "OK", 200, 334, "content-length", "20", "content-type", "text/plain",
-        "access-control-allow-origin", "*", "header-name", "header-value", "multi-header-name",
+        "OK", 200, 359, "Content-Length", "20", "Content-Type", "text/plain",
+        "Access-Control-Allow-Origin", "*", "header-name", "header-value", "multi-header-name",
         "header-value1", "multi-header-name", "header-value2");
 
     mTestRule.assertResponseEquals(secondExpectedResponseInfo, mResponseInfo);
@@ -692,12 +692,11 @@ public class CronetUrlRequestTest {
   @Test
   @SmallTest
   @Feature({"Cronet"})
-  @Ignore("https://github.com/envoyproxy/envoy-mobile/issues/1426")
   public void testMockNotFound() throws Exception {
     TestUrlRequestCallback callback = startAndWaitForComplete(NativeTestServer.getNotFoundURL());
     UrlResponseInfo expected =
         createUrlResponseInfo(new String[] {NativeTestServer.getNotFoundURL()}, "Not Found", 404,
-                              140, "content-length", "96");
+                              142, "Content-Length", "96");
     mTestRule.assertResponseEquals(expected, callback.mResponseInfo);
     assertTrue(callback.mHttpResponseDataLength != 0);
     assertEquals(0, callback.mRedirectCount);
@@ -798,7 +797,6 @@ public class CronetUrlRequestTest {
   @Test
   @SmallTest
   @Feature({"Cronet"})
-  @Ignore("https://github.com/envoyproxy/envoy-mobile/issues/1540")
   public void testSimpleGetBufferUpdates() throws Exception {
     TestUrlRequestCallback callback = new TestUrlRequestCallback();
     callback.setAutoAdvance(false);
@@ -2142,6 +2140,12 @@ public class CronetUrlRequestTest {
     final ConditionVariable done = new ConditionVariable();
     UrlRequest.Callback callback = new UrlRequest.Callback() {
       @Override
+      public void onSucceeded(UrlRequest request, UrlResponseInfo info) {
+        failedExpectation.set(true);
+        fail();
+      }
+
+      @Override
       public void onRedirectReceived(UrlRequest request, UrlResponseInfo info,
                                      String newLocationUrl) {
         failedExpectation.set(true);
@@ -2156,12 +2160,6 @@ public class CronetUrlRequestTest {
 
       @Override
       public void onReadCompleted(UrlRequest request, UrlResponseInfo info, ByteBuffer byteBuffer) {
-        failedExpectation.set(true);
-        fail();
-      }
-
-      @Override
-      public void onSucceeded(UrlRequest request, UrlResponseInfo info) {
         failedExpectation.set(true);
         fail();
       }
@@ -2310,8 +2308,7 @@ public class CronetUrlRequestTest {
    */
   public void testManyRequests() throws Exception {
     String url = NativeTestServer.getMultiRedirectURL();
-    // Jelly Bean has a 2000 limit on global references, crbug.com/922656.
-    final int numRequests = Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT ? 2000 : 1500;
+    final int numRequests = 1000;
     TestUrlRequestCallback callbacks[] = new TestUrlRequestCallback[numRequests];
     UrlRequest requests[] = new UrlRequest[numRequests];
     for (int i = 0; i < numRequests; i++) {

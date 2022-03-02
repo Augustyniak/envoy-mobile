@@ -12,6 +12,7 @@ swift_library(
         "EngineBuilder.swift",
         "EngineImpl.swift",
         "EnvoyError.swift",
+        "FinalStreamIntel.swift",
         "Headers.swift",
         "HeadersBuilder.swift",
         "LogLevel.swift",
@@ -33,6 +34,7 @@ swift_library(
         "StreamCallbacks.swift",
         "StreamClient.swift",
         "StreamClientImpl.swift",
+        "StreamIntel.swift",
         "StreamPrototype.swift",
         "TestEngineBuilder.swift",
         "Trailers.swift",
@@ -41,10 +43,14 @@ swift_library(
         "grpc/*.swift",
         "mocks/*.swift",
         "stats/*.swift",
-    ]),
+    ]) + ["@envoy_mobile_extra_swift_sources//:extra_swift_srcs"],
     features = ["swift.enable_library_evolution"],
+    generates_header = True,
     module_name = "Envoy",
-    private_deps = ["//library/objective-c:envoy_engine_objc_lib"],
+    private_deps = [
+        "//library/objective-c:envoy_engine_objc_lib",
+        "@envoy_mobile_extra_swift_sources//:extra_private_dep",
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -58,6 +64,11 @@ ios_static_framework(
     hdrs = ["ios_lib_headers"],
     bundle_name = "Envoy",
     minimum_os_version = "11.0",
+    # Currently the framework is over 2GB, and is not worth caching
+    tags = [
+        "no-cache",
+        "no-remote",
+    ],
     visibility = ["//visibility:public"],
     deps = ["ios_lib"],
 )

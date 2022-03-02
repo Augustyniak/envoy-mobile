@@ -1,10 +1,10 @@
 #include <ares.h>
-#include <jni.h>
 
 #include <string>
 
 #include "library/common/api/c_types.h"
 #include "library/common/extensions/filters/http/platform_bridge/c_types.h"
+#include "library/common/jni/import/jni_import.h"
 #include "library/common/jni/jni_support.h"
 #include "library/common/jni/jni_utility.h"
 #include "library/common/jni/jni_version.h"
@@ -39,7 +39,7 @@ static void jvm_on_engine_running(void* context) {
 
   env->DeleteLocalRef(jcls_JvmonEngineRunningContext);
   // TODO(goaway): This isn't re-used by other engine callbacks, so it's safe to delete here.
-  // This will need to be updated for https://github.com/lyft/envoy-mobile/issues/332
+  // This will need to be updated for https://github.com/envoyproxy/envoy-mobile/issues/332
   env->DeleteGlobalRef(j_context);
 }
 
@@ -69,8 +69,28 @@ static void jvm_on_exit(void*) {
   jvm_detach_thread();
 }
 
+static void jvm_on_track(envoy_map events, const void* context) {
+  jni_log("[Envoy]", "jvm_on_track");
+  if (context == nullptr) {
+    return;
+  }
+
+  JNIEnv* env = get_env();
+  jobject events_hashmap = native_map_to_map(env, events);
+
+  jobject j_context = static_cast<jobject>(const_cast<void*>(context));
+  jclass jcls_EnvoyEventTracker = env->GetObjectClass(j_context);
+  jmethodID jmid_onTrack = env->GetMethodID(jcls_EnvoyEventTracker, "track", "(Ljava/util/Map;)V");
+  env->CallVoidMethod(j_context, jmid_onTrack, events_hashmap);
+
+  release_envoy_map(events);
+  env->DeleteLocalRef(events_hashmap);
+  env->DeleteLocalRef(jcls_EnvoyEventTracker);
+}
+
 extern "C" JNIEXPORT jlong JNICALL Java_io_envoyproxy_envoymobile_engine_JniLibrary_initEngine(
-    JNIEnv* env, jclass, jobject on_start_context, jobject envoy_logger_context) {
+    JNIEnv* env, jclass, jobject on_start_context, jobject envoy_logger_context,
+    jobject j_event_tracker) {
   jobject retained_on_start_context =
       env->NewGlobalRef(on_start_context); // Required to keep context in memory
   envoy_engine_callbacks native_callbacks = {jvm_on_engine_running, jvm_on_exit,
@@ -81,7 +101,18 @@ extern "C" JNIEXPORT jlong JNICALL Java_io_envoyproxy_envoymobile_engine_JniLibr
   if (envoy_logger_context != nullptr) {
     logger = envoy_logger{jvm_on_log, jni_delete_const_global_ref, retained_logger_context};
   }
-  return init_engine(native_callbacks, logger);
+
+  envoy_event_tracker event_tracker = {nullptr, nullptr};
+  if (j_event_tracker != nullptr) {
+    // TODO(goaway): The retained_context leaks, but it's tied to the life of the engine.
+    // This will need to be updated for https://github.com/envoyproxy/envoy-mobile/issues/332.
+    jobject retained_context = env->NewGlobalRef(j_event_tracker);
+    jni_log_fmt("[Envoy]", "retained_context: %p", retained_context);
+    event_tracker.track = jvm_on_track;
+    event_tracker.context = retained_context;
+  }
+
+  return init_engine(native_callbacks, logger, event_tracker);
 }
 
 extern "C" JNIEXPORT jint JNICALL Java_io_envoyproxy_envoymobile_engine_JniLibrary_runEngine(
@@ -181,6 +212,23 @@ Java_io_envoyproxy_envoymobile_engine_JniLibrary_flushStats(JNIEnv* env,
   flush_stats(engine);
 }
 
+extern "C" JNIEXPORT jstring JNICALL
+Java_io_envoyproxy_envoymobile_engine_JniLibrary_dumpStats(JNIEnv* env,
+                                                           jclass, // class
+                                                           jlong engine) {
+  jni_log("[Envoy]", "dumpStats");
+  envoy_data data;
+  jint result = dump_stats(engine, &data);
+  if (result != ENVOY_SUCCESS) {
+    return env->NewStringUTF("");
+  }
+
+  jstring str = native_data_to_string(env, data);
+  release_envoy_data(data);
+
+  return str;
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_io_envoyproxy_envoymobile_engine_JniLibrary_recordHistogramValue(JNIEnv* env,
                                                                       jclass, // class
@@ -233,7 +281,7 @@ static void pass_headers(const char* method, envoy_headers headers, jobject j_co
 // released automatically. Manual bookkeeping is required for these methods.
 
 static void* jvm_on_headers(const char* method, envoy_headers headers, bool end_stream,
-                            void* context) {
+                            envoy_stream_intel stream_intel, void* context) {
   jni_log("[Envoy]", "jvm_on_headers");
   JNIEnv* env = get_env();
   jobject j_context = static_cast<jobject>(context);
@@ -241,26 +289,31 @@ static void* jvm_on_headers(const char* method, envoy_headers headers, bool end_
 
   jclass jcls_JvmCallbackContext = env->GetObjectClass(j_context);
   jmethodID jmid_onHeaders =
-      env->GetMethodID(jcls_JvmCallbackContext, method, "(JZ)Ljava/lang/Object;");
+      env->GetMethodID(jcls_JvmCallbackContext, method, "(JZ[J)Ljava/lang/Object;");
+
+  jlongArray j_stream_intel = native_stream_intel_to_array(env, stream_intel);
   // Note: be careful of JVM types. Before we casted to jlong we were getting integer problems.
   // TODO: make this cast safer.
   jobject result = env->CallObjectMethod(j_context, jmid_onHeaders, (jlong)headers.length,
-                                         end_stream ? JNI_TRUE : JNI_FALSE);
+                                         end_stream ? JNI_TRUE : JNI_FALSE, j_stream_intel);
 
+  env->DeleteLocalRef(j_stream_intel);
   env->DeleteLocalRef(jcls_JvmCallbackContext);
 
   return result;
 }
 
-static void* jvm_on_response_headers(envoy_headers headers, bool end_stream, void* context) {
-  return jvm_on_headers("onResponseHeaders", headers, end_stream, context);
+static void* jvm_on_response_headers(envoy_headers headers, bool end_stream,
+                                     envoy_stream_intel stream_intel, void* context) {
+  return jvm_on_headers("onResponseHeaders", headers, end_stream, stream_intel, context);
 }
 
 static envoy_filter_headers_status
-jvm_http_filter_on_request_headers(envoy_headers headers, bool end_stream, const void* context) {
+jvm_http_filter_on_request_headers(envoy_headers headers, bool end_stream,
+                                   envoy_stream_intel stream_intel, const void* context) {
   JNIEnv* env = get_env();
-  jobjectArray result = static_cast<jobjectArray>(
-      jvm_on_headers("onRequestHeaders", headers, end_stream, const_cast<void*>(context)));
+  jobjectArray result = static_cast<jobjectArray>(jvm_on_headers(
+      "onRequestHeaders", headers, end_stream, stream_intel, const_cast<void*>(context)));
 
   jobject status = env->GetObjectArrayElement(result, 0);
   jobjectArray j_headers = static_cast<jobjectArray>(env->GetObjectArrayElement(result, 1));
@@ -277,10 +330,11 @@ jvm_http_filter_on_request_headers(envoy_headers headers, bool end_stream, const
 }
 
 static envoy_filter_headers_status
-jvm_http_filter_on_response_headers(envoy_headers headers, bool end_stream, const void* context) {
+jvm_http_filter_on_response_headers(envoy_headers headers, bool end_stream,
+                                    envoy_stream_intel stream_intel, const void* context) {
   JNIEnv* env = get_env();
-  jobjectArray result = static_cast<jobjectArray>(
-      jvm_on_headers("onResponseHeaders", headers, end_stream, const_cast<void*>(context)));
+  jobjectArray result = static_cast<jobjectArray>(jvm_on_headers(
+      "onResponseHeaders", headers, end_stream, stream_intel, const_cast<void*>(context)));
 
   jobject status = env->GetObjectArrayElement(result, 0);
   jobjectArray j_headers = static_cast<jobjectArray>(env->GetObjectArrayElement(result, 1));
@@ -296,35 +350,40 @@ jvm_http_filter_on_response_headers(envoy_headers headers, bool end_stream, cons
                                        /*headers*/ native_headers};
 }
 
-static void* jvm_on_data(const char* method, envoy_data data, bool end_stream, void* context) {
+static void* jvm_on_data(const char* method, envoy_data data, bool end_stream,
+                         envoy_stream_intel stream_intel, void* context) {
   jni_log("[Envoy]", "jvm_on_data");
   JNIEnv* env = get_env();
   jobject j_context = static_cast<jobject>(context);
 
   jclass jcls_JvmCallbackContext = env->GetObjectClass(j_context);
   jmethodID jmid_onData =
-      env->GetMethodID(jcls_JvmCallbackContext, method, "([BZ)Ljava/lang/Object;");
+      env->GetMethodID(jcls_JvmCallbackContext, method, "([BZ[J)Ljava/lang/Object;");
 
   jbyteArray j_data = native_data_to_array(env, data);
-  jobject result =
-      env->CallObjectMethod(j_context, jmid_onData, j_data, end_stream ? JNI_TRUE : JNI_FALSE);
+  jlongArray j_stream_intel = native_stream_intel_to_array(env, stream_intel);
+  jobject result = env->CallObjectMethod(j_context, jmid_onData, j_data,
+                                         end_stream ? JNI_TRUE : JNI_FALSE, j_stream_intel);
 
-  release_envoy_data(data);
+  env->DeleteLocalRef(j_stream_intel);
   env->DeleteLocalRef(j_data);
   env->DeleteLocalRef(jcls_JvmCallbackContext);
+  release_envoy_data(data);
 
   return result;
 }
 
-static void* jvm_on_response_data(envoy_data data, bool end_stream, void* context) {
-  return jvm_on_data("onResponseData", data, end_stream, context);
+static void* jvm_on_response_data(envoy_data data, bool end_stream, envoy_stream_intel stream_intel,
+                                  void* context) {
+  return jvm_on_data("onResponseData", data, end_stream, stream_intel, context);
 }
 
 static envoy_filter_data_status jvm_http_filter_on_request_data(envoy_data data, bool end_stream,
+                                                                envoy_stream_intel stream_intel,
                                                                 const void* context) {
   JNIEnv* env = get_env();
   jobjectArray result = static_cast<jobjectArray>(
-      jvm_on_data("onRequestData", data, end_stream, const_cast<void*>(context)));
+      jvm_on_data("onRequestData", data, end_stream, stream_intel, const_cast<void*>(context)));
 
   jobject status = env->GetObjectArrayElement(result, 0);
   jobject j_data = static_cast<jobjectArray>(env->GetObjectArrayElement(result, 1));
@@ -350,10 +409,11 @@ static envoy_filter_data_status jvm_http_filter_on_request_data(envoy_data data,
 }
 
 static envoy_filter_data_status jvm_http_filter_on_response_data(envoy_data data, bool end_stream,
+                                                                 envoy_stream_intel stream_intel,
                                                                  const void* context) {
   JNIEnv* env = get_env();
   jobjectArray result = static_cast<jobjectArray>(
-      jvm_on_data("onResponseData", data, end_stream, const_cast<void*>(context)));
+      jvm_on_data("onResponseData", data, end_stream, stream_intel, const_cast<void*>(context)));
 
   jobject status = env->GetObjectArrayElement(result, 0);
   jobject j_data = static_cast<jobjectArray>(env->GetObjectArrayElement(result, 1));
@@ -378,13 +438,15 @@ static envoy_filter_data_status jvm_http_filter_on_response_data(envoy_data data
                                     /*pending_headers*/ pending_headers};
 }
 
-static void* jvm_on_metadata(envoy_headers metadata, void* context) {
+static void* jvm_on_metadata(envoy_headers metadata, envoy_stream_intel stream_intel,
+                             void* context) {
   jni_log("[Envoy]", "jvm_on_metadata");
   jni_log("[Envoy]", std::to_string(metadata.length).c_str());
   return NULL;
 }
 
-static void* jvm_on_trailers(const char* method, envoy_headers trailers, void* context) {
+static void* jvm_on_trailers(const char* method, envoy_headers trailers,
+                             envoy_stream_intel stream_intel, void* context) {
   jni_log("[Envoy]", "jvm_on_trailers");
 
   JNIEnv* env = get_env();
@@ -393,25 +455,31 @@ static void* jvm_on_trailers(const char* method, envoy_headers trailers, void* c
 
   jclass jcls_JvmCallbackContext = env->GetObjectClass(j_context);
   jmethodID jmid_onTrailers =
-      env->GetMethodID(jcls_JvmCallbackContext, method, "(J)Ljava/lang/Object;");
+      env->GetMethodID(jcls_JvmCallbackContext, method, "(J[J)Ljava/lang/Object;");
+
+  jlongArray j_stream_intel = native_stream_intel_to_array(env, stream_intel);
   // Note: be careful of JVM types. Before we casted to jlong we were getting integer problems.
   // TODO: make this cast safer.
-  jobject result = env->CallObjectMethod(j_context, jmid_onTrailers, (jlong)trailers.length);
+  jobject result =
+      env->CallObjectMethod(j_context, jmid_onTrailers, (jlong)trailers.length, j_stream_intel);
 
+  env->DeleteLocalRef(j_stream_intel);
   env->DeleteLocalRef(jcls_JvmCallbackContext);
 
   return result;
 }
 
-static void* jvm_on_response_trailers(envoy_headers trailers, void* context) {
-  return jvm_on_trailers("onResponseTrailers", trailers, context);
+static void* jvm_on_response_trailers(envoy_headers trailers, envoy_stream_intel stream_intel,
+                                      void* context) {
+  return jvm_on_trailers("onResponseTrailers", trailers, stream_intel, context);
 }
 
-static envoy_filter_trailers_status jvm_http_filter_on_request_trailers(envoy_headers trailers,
-                                                                        const void* context) {
+static envoy_filter_trailers_status
+jvm_http_filter_on_request_trailers(envoy_headers trailers, envoy_stream_intel stream_intel,
+                                    const void* context) {
   JNIEnv* env = get_env();
   jobjectArray result = static_cast<jobjectArray>(
-      jvm_on_trailers("onRequestTrailers", trailers, const_cast<void*>(context)));
+      jvm_on_trailers("onRequestTrailers", trailers, stream_intel, const_cast<void*>(context)));
 
   jobject status = env->GetObjectArrayElement(result, 0);
   jobjectArray j_trailers = static_cast<jobjectArray>(env->GetObjectArrayElement(result, 1));
@@ -442,11 +510,12 @@ static envoy_filter_trailers_status jvm_http_filter_on_request_trailers(envoy_he
                                         /*pending_data*/ pending_data};
 }
 
-static envoy_filter_trailers_status jvm_http_filter_on_response_trailers(envoy_headers trailers,
-                                                                         const void* context) {
+static envoy_filter_trailers_status
+jvm_http_filter_on_response_trailers(envoy_headers trailers, envoy_stream_intel stream_intel,
+                                     const void* context) {
   JNIEnv* env = get_env();
   jobjectArray result = static_cast<jobjectArray>(
-      jvm_on_trailers("onResponseTrailers", trailers, const_cast<void*>(context)));
+      jvm_on_trailers("onResponseTrailers", trailers, stream_intel, const_cast<void*>(context)));
 
   jobject status = env->GetObjectArrayElement(result, 0);
   jobjectArray j_trailers = static_cast<jobjectArray>(env->GetObjectArrayElement(result, 1));
@@ -521,7 +590,8 @@ static void jvm_http_filter_set_response_callbacks(envoy_http_filter_callbacks c
 
 static envoy_filter_resume_status
 jvm_http_filter_on_resume(const char* method, envoy_headers* headers, envoy_data* data,
-                          envoy_headers* trailers, bool end_stream, const void* context) {
+                          envoy_headers* trailers, bool end_stream, envoy_stream_intel stream_intel,
+                          const void* context) {
   jni_log("[Envoy]", "jvm_on_resume");
 
   JNIEnv* env = get_env();
@@ -540,17 +610,19 @@ jvm_http_filter_on_resume(const char* method, envoy_headers* headers, envoy_data
     trailers_length = (jlong)trailers->length;
     pass_headers("passTrailer", *trailers, j_context);
   }
+  jlongArray j_stream_intel = native_stream_intel_to_array(env, stream_intel);
 
   jclass jcls_JvmCallbackContext = env->GetObjectClass(j_context);
   jmethodID jmid_onResume =
-      env->GetMethodID(jcls_JvmCallbackContext, method, "(J[BJZ)Ljava/lang/Object;");
+      env->GetMethodID(jcls_JvmCallbackContext, method, "(J[BJZ[J)Ljava/lang/Object;");
   // Note: be careful of JVM types. Before we casted to jlong we were getting integer problems.
   // TODO: make this cast safer.
   jobjectArray result = static_cast<jobjectArray>(
       env->CallObjectMethod(j_context, jmid_onResume, headers_length, j_in_data, trailers_length,
-                            end_stream ? JNI_TRUE : JNI_FALSE));
+                            end_stream ? JNI_TRUE : JNI_FALSE, j_stream_intel));
 
   env->DeleteLocalRef(jcls_JvmCallbackContext);
+  env->DeleteLocalRef(j_stream_intel);
   if (j_in_data != NULL) {
     env->DeleteLocalRef(j_in_data);
   }
@@ -579,49 +651,76 @@ jvm_http_filter_on_resume(const char* method, envoy_headers* headers, envoy_data
 
 static envoy_filter_resume_status
 jvm_http_filter_on_resume_request(envoy_headers* headers, envoy_data* data, envoy_headers* trailers,
-                                  bool end_stream, const void* context) {
-  return jvm_http_filter_on_resume("onResumeRequest", headers, data, trailers, end_stream, context);
+                                  bool end_stream, envoy_stream_intel stream_intel,
+                                  const void* context) {
+  return jvm_http_filter_on_resume("onResumeRequest", headers, data, trailers, end_stream,
+                                   stream_intel, context);
 }
 
 static envoy_filter_resume_status
 jvm_http_filter_on_resume_response(envoy_headers* headers, envoy_data* data,
-                                   envoy_headers* trailers, bool end_stream, const void* context) {
+                                   envoy_headers* trailers, bool end_stream,
+                                   envoy_stream_intel stream_intel, const void* context) {
   return jvm_http_filter_on_resume("onResumeResponse", headers, data, trailers, end_stream,
-                                   context);
+                                   stream_intel, context);
 }
 
-static void* jvm_on_complete(void* context) {
-  jni_delete_global_ref(context);
-  return NULL;
+static void* call_jvm_on_complete(envoy_stream_intel stream_intel,
+                                  envoy_final_stream_intel final_stream_intel, void* context) {
+  jni_log("[Envoy]", "jvm_on_complete");
+
+  JNIEnv* env = get_env();
+  jobject j_context = static_cast<jobject>(context);
+
+  jclass jcls_JvmObserverContext = env->GetObjectClass(j_context);
+  jmethodID jmid_onComplete =
+      env->GetMethodID(jcls_JvmObserverContext, "onComplete", "([J[J)Ljava/lang/Object;");
+
+  jlongArray j_stream_intel = native_stream_intel_to_array(env, stream_intel);
+  jlongArray j_final_stream_intel = native_final_stream_intel_to_array(env, final_stream_intel);
+  jobject result =
+      env->CallObjectMethod(j_context, jmid_onComplete, j_stream_intel, j_final_stream_intel);
+
+  env->DeleteLocalRef(j_stream_intel);
+  env->DeleteLocalRef(j_final_stream_intel);
+  env->DeleteLocalRef(jcls_JvmObserverContext);
+  return result;
 }
 
-static void* call_jvm_on_error(envoy_error error, void* context) {
+static void* call_jvm_on_error(envoy_error error, envoy_stream_intel stream_intel,
+                               envoy_final_stream_intel final_stream_intel, void* context) {
   jni_log("[Envoy]", "jvm_on_error");
   JNIEnv* env = get_env();
   jobject j_context = static_cast<jobject>(context);
 
   jclass jcls_JvmObserverContext = env->GetObjectClass(j_context);
   jmethodID jmid_onError =
-      env->GetMethodID(jcls_JvmObserverContext, "onError", "(I[BI)Ljava/lang/Object;");
+      env->GetMethodID(jcls_JvmObserverContext, "onError", "(I[BI[J[J)Ljava/lang/Object;");
 
   jbyteArray j_error_message = native_data_to_array(env, error.message);
+  jlongArray j_stream_intel = native_stream_intel_to_array(env, stream_intel);
+  jlongArray j_final_stream_intel = native_final_stream_intel_to_array(env, final_stream_intel);
 
   jobject result = env->CallObjectMethod(j_context, jmid_onError, error.error_code, j_error_message,
-                                         error.attempt_count);
+                                         error.attempt_count, j_stream_intel, j_final_stream_intel);
 
-  release_envoy_error(error);
-  env->DeleteLocalRef(jcls_JvmObserverContext);
+  env->DeleteLocalRef(j_stream_intel);
+  env->DeleteLocalRef(j_final_stream_intel);
   env->DeleteLocalRef(j_error_message);
+  env->DeleteLocalRef(jcls_JvmObserverContext);
+  release_envoy_error(error);
   return result;
 }
 
-static void* jvm_on_error(envoy_error error, void* context) {
-  void* result = call_jvm_on_error(error, context);
+static void* jvm_on_error(envoy_error error, envoy_stream_intel stream_intel,
+                          envoy_final_stream_intel final_stream_intel, void* context) {
+  void* result = call_jvm_on_error(error, stream_intel, final_stream_intel, context);
   jni_delete_global_ref(context);
   return result;
 }
 
-static void* call_jvm_on_cancel(void* context) {
+static void* call_jvm_on_cancel(envoy_stream_intel stream_intel,
+                                envoy_final_stream_intel final_stream_intel, void* context) {
   jni_log("[Envoy]", "jvm_on_cancel");
 
   JNIEnv* env = get_env();
@@ -629,25 +728,63 @@ static void* call_jvm_on_cancel(void* context) {
 
   jclass jcls_JvmObserverContext = env->GetObjectClass(j_context);
   jmethodID jmid_onCancel =
-      env->GetMethodID(jcls_JvmObserverContext, "onCancel", "()Ljava/lang/Object;");
-  jobject result = env->CallObjectMethod(j_context, jmid_onCancel);
+      env->GetMethodID(jcls_JvmObserverContext, "onCancel", "([J[J)Ljava/lang/Object;");
 
+  jlongArray j_stream_intel = native_stream_intel_to_array(env, stream_intel);
+  jlongArray j_final_stream_intel = native_final_stream_intel_to_array(env, final_stream_intel);
+
+  jobject result =
+      env->CallObjectMethod(j_context, jmid_onCancel, j_stream_intel, j_final_stream_intel);
+
+  env->DeleteLocalRef(j_stream_intel);
+  env->DeleteLocalRef(j_final_stream_intel);
   env->DeleteLocalRef(jcls_JvmObserverContext);
   return result;
 }
 
-static void* jvm_on_cancel(void* context) {
-  void* result = call_jvm_on_cancel(context);
+static void* jvm_on_complete(envoy_stream_intel stream_intel,
+                             envoy_final_stream_intel final_stream_intel, void* context) {
+  void* result = call_jvm_on_complete(stream_intel, final_stream_intel, context);
   jni_delete_global_ref(context);
   return result;
 }
 
-static void jvm_http_filter_on_error(envoy_error error, const void* context) {
-  call_jvm_on_error(error, const_cast<void*>(context));
+static void* jvm_on_cancel(envoy_stream_intel stream_intel,
+                           envoy_final_stream_intel final_stream_intel, void* context) {
+  void* result = call_jvm_on_cancel(stream_intel, final_stream_intel, context);
+  jni_delete_global_ref(context);
+  return result;
 }
 
-static void jvm_http_filter_on_cancel(const void* context) {
-  call_jvm_on_cancel(const_cast<void*>(context));
+static void jvm_http_filter_on_error(envoy_error error, envoy_stream_intel stream_intel,
+                                     envoy_final_stream_intel final_stream_intel,
+                                     const void* context) {
+  call_jvm_on_error(error, stream_intel, final_stream_intel, const_cast<void*>(context));
+}
+
+static void jvm_http_filter_on_cancel(envoy_stream_intel stream_intel,
+                                      envoy_final_stream_intel final_stream_intel,
+                                      const void* context) {
+  call_jvm_on_cancel(stream_intel, final_stream_intel, const_cast<void*>(context));
+}
+
+static void* jvm_on_send_window_available(envoy_stream_intel stream_intel, void* context) {
+  jni_log("[Envoy]", "jvm_on_send_window_available");
+
+  JNIEnv* env = get_env();
+  jobject j_context = static_cast<jobject>(context);
+
+  jclass jcls_JvmObserverContext = env->GetObjectClass(j_context);
+  jmethodID jmid_onSendWindowAvailable =
+      env->GetMethodID(jcls_JvmObserverContext, "onSendWindowAvailable", "([J)Ljava/lang/Object;");
+
+  jlongArray j_stream_intel = native_stream_intel_to_array(env, stream_intel);
+
+  jobject result = env->CallObjectMethod(j_context, jmid_onSendWindowAvailable, j_stream_intel);
+
+  env->DeleteLocalRef(j_stream_intel);
+  env->DeleteLocalRef(jcls_JvmObserverContext);
+  return result;
 }
 
 // JvmFilterFactoryContext
@@ -702,9 +839,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_io_envoyproxy_envoymobile_engine_JniLibr
 }
 
 extern "C" JNIEXPORT jint JNICALL Java_io_envoyproxy_envoymobile_engine_JniLibrary_startStream(
-    JNIEnv* env, jclass, jlong stream_handle, jobject j_context) {
-
-  jclass jcls_JvmCallbackContext = env->GetObjectClass(j_context);
+    JNIEnv* env, jclass, jlong stream_handle, jobject j_context, jboolean explicit_flow_control) {
 
   // TODO: To be truly safe we may need stronger guarantees of operation ordering on this ref.
   jobject retained_context = env->NewGlobalRef(j_context);
@@ -715,13 +850,13 @@ extern "C" JNIEXPORT jint JNICALL Java_io_envoyproxy_envoymobile_engine_JniLibra
                                            jvm_on_error,
                                            jvm_on_complete,
                                            jvm_on_cancel,
+                                           jvm_on_send_window_available,
                                            retained_context};
-  envoy_status_t result =
-      start_stream(static_cast<envoy_stream_t>(stream_handle), native_callbacks);
+  envoy_status_t result = start_stream(static_cast<envoy_stream_t>(stream_handle), native_callbacks,
+                                       explicit_flow_control);
   if (result != ENVOY_SUCCESS) {
     env->DeleteGlobalRef(retained_context); // No callbacks are fired and we need to release
   }
-  env->DeleteLocalRef(jcls_JvmCallbackContext);
   return result;
 }
 
@@ -733,10 +868,9 @@ Java_io_envoyproxy_envoymobile_engine_JniLibrary_registerFilterFactory(JNIEnv* e
                                                                        jobject j_context) {
 
   // TODO(goaway): Everything here leaks, but it's all be tied to the life of the engine.
-  // This will need to be updated for https://github.com/lyft/envoy-mobile/issues/332
+  // This will need to be updated for https://github.com/envoyproxy/envoy-mobile/issues/332
   jni_log("[Envoy]", "registerFilterFactory");
   jni_log_fmt("[Envoy]", "j_context: %p", j_context);
-  jclass jcls_JvmFilterFactoryContext = env->GetObjectClass(j_context);
   jobject retained_context = env->NewGlobalRef(j_context);
   jni_log_fmt("[Envoy]", "retained_context: %p", retained_context);
   envoy_http_filter* api = (envoy_http_filter*)safe_malloc(sizeof(envoy_http_filter));
@@ -758,7 +892,6 @@ Java_io_envoyproxy_envoymobile_engine_JniLibrary_registerFilterFactory(JNIEnv* e
   api->instance_context = NULL;
 
   envoy_status_t result = register_platform_api(env->GetStringUTFChars(filter_name, nullptr), api);
-  env->DeleteLocalRef(jcls_JvmFilterFactoryContext);
   return result;
 }
 
@@ -800,28 +933,41 @@ Java_io_envoyproxy_envoymobile_engine_EnvoyHTTPFilterCallbacksImpl_callReleaseCa
 
 // EnvoyHTTPStream
 
-// Note: JLjava_nio_ByteBuffer_2Z is the mangled signature of the java method.
-// https://docs.oracle.com/javase/7/docs/technotes/guides/jni/spec/design.html
-extern "C" JNIEXPORT jint JNICALL
-Java_io_envoyproxy_envoymobile_engine_JniLibrary_sendData__JLjava_nio_ByteBuffer_2Z(
-    JNIEnv* env, jclass, jlong stream_handle, jobject data, jboolean end_stream) {
+extern "C" JNIEXPORT jint JNICALL Java_io_envoyproxy_envoymobile_engine_JniLibrary_readData(
+    JNIEnv* env, jclass, jlong stream_handle, jlong byte_count) {
 
-  // TODO: check for null pointer in envoy_data.bytes - we could copy or raise an exception.
-  return send_data(static_cast<envoy_stream_t>(stream_handle), buffer_to_native_data(env, data),
-                   end_stream);
+  return read_data(static_cast<envoy_stream_t>(stream_handle), byte_count);
 }
 
-// Note: J_3BZ is the mangled signature of the java method.
+// Note: JLjava_nio_ByteBuffer_2IZ is the mangled signature of the java method.
 // https://docs.oracle.com/javase/7/docs/technotes/guides/jni/spec/design.html
-extern "C" JNIEXPORT jint JNICALL Java_io_envoyproxy_envoymobile_engine_JniLibrary_sendData__J_3BZ(
-    JNIEnv* env, jclass, jlong stream_handle, jbyteArray data, jboolean end_stream) {
+// The Java counterpart guarantees to invoke this method with a non-null direct ByteBuffer where the
+// provided length is between 0 and ByteBuffer.capacity(), inclusively.
+extern "C" JNIEXPORT jint JNICALL
+Java_io_envoyproxy_envoymobile_engine_JniLibrary_sendData__JLjava_nio_ByteBuffer_2IZ(
+    JNIEnv* env, jclass, jlong stream_handle, jobject data, jint length, jboolean end_stream) {
   if (end_stream) {
     jni_log("[Envoy]", "jvm_send_data_end_stream");
   }
 
-  // TODO: check for null pointer in envoy_data.bytes - we could copy or raise an exception.
-  return send_data(static_cast<envoy_stream_t>(stream_handle), array_to_native_data(env, data),
-                   end_stream);
+  return send_data(static_cast<envoy_stream_t>(stream_handle),
+                   buffer_to_native_data(env, data, length), end_stream);
+}
+
+// Note: J_3BIZ is the mangled signature of the java method.
+// https://docs.oracle.com/javase/7/docs/technotes/guides/jni/spec/design.html
+// The Java counterpart guarantees to invoke this method with a non-null jbyteArray where the
+// provided length is between 0 and the size of the jbyteArray, inclusively. And given that this
+// jbyteArray comes from a ByteBuffer, it is also guaranteed that its length will not be greater
+// than 2^31 - this is why the length type is jint.
+extern "C" JNIEXPORT jint JNICALL Java_io_envoyproxy_envoymobile_engine_JniLibrary_sendData__J_3BIZ(
+    JNIEnv* env, jclass, jlong stream_handle, jbyteArray data, jint length, jboolean end_stream) {
+  if (end_stream) {
+    jni_log("[Envoy]", "jvm_send_data_end_stream");
+  }
+
+  return send_data(static_cast<envoy_stream_t>(stream_handle),
+                   array_to_native_data(env, data, length), end_stream);
 }
 
 extern "C" JNIEXPORT jint JNICALL Java_io_envoyproxy_envoymobile_engine_JniLibrary_sendHeaders(
@@ -852,8 +998,7 @@ Java_io_envoyproxy_envoymobile_engine_JniLibrary_registerStringAccessor(JNIEnv* 
                                                                         jobject j_context) {
 
   // TODO(goaway): The retained_context leaks, but it's tied to the life of the engine.
-  // This will need to be updated for https://github.com/lyft/envoy-mobile/issues/332.
-  jclass jcls_JvmStringAccessorContext = env->GetObjectClass(j_context);
+  // This will need to be updated for https://github.com/envoyproxy/envoy-mobile/issues/332.
   jobject retained_context = env->NewGlobalRef(j_context);
 
   envoy_string_accessor* string_accessor =
@@ -863,6 +1008,13 @@ Java_io_envoyproxy_envoymobile_engine_JniLibrary_registerStringAccessor(JNIEnv* 
 
   envoy_status_t result =
       register_platform_api(env->GetStringUTFChars(accessor_name, nullptr), string_accessor);
-  env->DeleteLocalRef(jcls_JvmStringAccessorContext);
   return result;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_envoyproxy_envoymobile_engine_JniLibrary_drainConnections(JNIEnv* env,
+                                                                  jclass, // class
+                                                                  jlong engine) {
+  jni_log("[Envoy]", "drainConnections");
+  drain_connections(engine);
 }

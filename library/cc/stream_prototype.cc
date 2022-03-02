@@ -11,7 +11,7 @@ StreamPrototype::StreamPrototype(EngineSharedPtr engine) : engine_(engine) {
 
 StreamSharedPtr StreamPrototype::start() {
   auto envoy_stream = init_stream(this->engine_->engine_);
-  start_stream(envoy_stream, this->callbacks_->asEnvoyHttpCallbacks());
+  start_stream(envoy_stream, this->callbacks_->asEnvoyHttpCallbacks(), false);
   return std::make_shared<Stream>(envoy_stream);
 }
 
@@ -42,6 +42,11 @@ StreamPrototype& StreamPrototype::setOnComplete(OnCompleteCallback closure) {
 
 StreamPrototype& StreamPrototype::setOnCancel(OnCancelCallback closure) {
   this->callbacks_->on_cancel = closure;
+  return *this;
+}
+
+StreamPrototype& StreamPrototype::setOnSendWindowAvailable(OnSendWindowAvailableCallback closure) {
+  this->callbacks_->on_send_window_available = closure;
   return *this;
 }
 

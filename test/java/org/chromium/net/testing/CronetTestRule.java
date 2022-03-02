@@ -49,12 +49,14 @@ public final class CronetTestRule implements TestRule {
   /**
    * Name of the file that contains the test server certificate in PEM format.
    */
-  public static final String SERVER_CERT_PEM = "quic-chain.pem";
+  public static final String SERVER_CERT_PEM =
+      "../envoy/test/config/integration/certs/upstreamcert.pem";
 
   /**
    * Name of the file that contains the test server private key in PKCS8 PEM format.
    */
-  public static final String SERVER_KEY_PKCS8_PEM = "quic-leaf-cert.key.pkcs8.pem";
+  public static final String SERVER_KEY_PKCS8_PEM =
+      "../envoy/test/config/integration/certs/upstreamkey.pem";
 
   private static final String TAG = CronetTestRule.class.getSimpleName();
 
@@ -68,7 +70,7 @@ public final class CronetTestRule implements TestRule {
 
     private static ExperimentalCronetEngine createEngine(Context context) {
       ExperimentalCronetEngine.Builder builder = new ExperimentalCronetEngine.Builder(context);
-      ((CronetEngineBuilderImpl)builder.getBuilderDelegate()).setLogLevel(LogLevel.DEBUG);
+      ((CronetEngineBuilderImpl)builder.getBuilderDelegate()).setLogLevel("warning");
       return builder.enableQuic(true).build();
     }
 

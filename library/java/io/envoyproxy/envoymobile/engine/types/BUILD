@@ -5,6 +5,8 @@ licenses(["notice"])  # Apache 2
 java_library(
     name = "envoy_c_types_lib",
     srcs = [
+        "EnvoyEventTracker.java",
+        "EnvoyFinalStreamIntel.java",
         "EnvoyHTTPCallbacks.java",
         "EnvoyHTTPFilter.java",
         "EnvoyHTTPFilterCallbacks.java",
@@ -12,6 +14,7 @@ java_library(
         "EnvoyLogger.java",
         "EnvoyOnEngineRunning.java",
         "EnvoyStatus.java",
+        "EnvoyStreamIntel.java",
         "EnvoyStringAccessor.java",
     ],
     visibility = ["//visibility:public"],

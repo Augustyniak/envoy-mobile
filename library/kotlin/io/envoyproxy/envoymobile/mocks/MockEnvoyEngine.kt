@@ -18,7 +18,12 @@ internal class MockEnvoyEngine : EnvoyEngine {
     logLevel: String
   ): Int = 0
 
-  override fun startStream(callbacks: EnvoyHTTPCallbacks?): EnvoyHTTPStream = MockEnvoyHTTPStream(callbacks!!)
+  override fun startStream(
+    callbacks: EnvoyHTTPCallbacks?,
+    explicitFlowControl: Boolean
+  ): EnvoyHTTPStream {
+    return MockEnvoyHTTPStream(callbacks!!, explicitFlowControl)
+  }
 
   override fun terminate() = Unit
 
@@ -37,4 +42,8 @@ internal class MockEnvoyEngine : EnvoyEngine {
   override fun registerStringAccessor(accessorName: String, accessor: EnvoyStringAccessor): Int = 0
 
   override fun flushStats() = Unit
+
+  override fun dumpStats(): String = ""
+
+  override fun drainConnections() = Unit
 }

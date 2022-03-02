@@ -15,6 +15,34 @@ envoy_mobile_jni_kt_test(
 )
 
 envoy_mobile_jni_kt_test(
+    name = "engine_api_test",
+    srcs = [
+        "EngineApiTest.kt",
+    ],
+    native_deps = [
+        "//library/common/jni:libjava_jni_lib.so",
+        "//library/common/jni:java_jni_lib.jnilib",
+    ],
+    deps = [
+        "//library/kotlin/io/envoyproxy/envoymobile:envoy_interfaces_lib",
+    ],
+)
+
+envoy_mobile_jni_kt_test(
+    name = "set_event_tracker_test",
+    srcs = [
+        "SetEventTrackerTest.kt",
+    ],
+    native_deps = [
+        "//library/common/jni:libjava_jni_lib.so",
+        "//library/common/jni:java_jni_lib.jnilib",
+    ],
+    deps = [
+        "//library/kotlin/io/envoyproxy/envoymobile:envoy_interfaces_lib",
+    ],
+)
+
+envoy_mobile_jni_kt_test(
     name = "set_logger_test",
     srcs = [
         "SetLoggerTest.kt",
@@ -58,6 +86,20 @@ envoy_mobile_jni_kt_test(
 )
 
 envoy_mobile_jni_kt_test(
+    name = "drain_connections_test",
+    srcs = [
+        "DrainConnectionsTest.kt",
+    ],
+    native_deps = [
+        "//library/common/jni:libjava_jni_lib.so",
+        "//library/common/jni:java_jni_lib.jnilib",
+    ],
+    deps = [
+        "//library/kotlin/io/envoyproxy/envoymobile:envoy_interfaces_lib",
+    ],
+)
+
+envoy_mobile_jni_kt_test(
     name = "grpc_receive_error_test",
     srcs = [
         "GRPCReceiveErrorTest.kt",
@@ -76,6 +118,10 @@ envoy_mobile_jni_kt_test(
     srcs = [
         "ReceiveDataTest.kt",
     ],
+    exec_properties = {
+        # TODO(lfpino): Remove this once the sandboxNetwork=off works for ipv4 localhost addresses.
+        "sandboxNetwork": "standard",
+    },
     native_deps = [
         "//library/common/jni:libjava_jni_lib.so",
         "//library/common/jni:java_jni_lib.jnilib",

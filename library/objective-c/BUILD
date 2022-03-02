@@ -20,21 +20,33 @@ objc_library(
         "EnvoyHTTPStreamImpl.m",
         "EnvoyLogger.m",
         "EnvoyNativeFilterConfig.m",
-        "EnvoyNetworkMonitor.m",
         "EnvoyStringAccessor.m",
-    ],
+    ] + select({
+        "@platforms//os:macos": [
+        ],
+        "//conditions:default": [
+            "EnvoyNetworkMonitor.m",
+        ],
+    }),
     hdrs = [
         "EnvoyEngine.h",
     ],
     module_name = "EnvoyEngine",
     sdk_frameworks = [
+        "Network",
         "SystemConfiguration",
-        "UIKit",
-    ],
+    ] + select({
+        "@platforms//os:macos": [
+        ],
+        "//conditions:default": [
+            "UIKit",
+        ],
+    }),
     visibility = ["//visibility:public"],
     deps = [
         ":envoy_objc_bridge_lib",
         "//library/common:envoy_main_interface_lib",
+        "//library/common/api:c_types",
     ],
 )
 

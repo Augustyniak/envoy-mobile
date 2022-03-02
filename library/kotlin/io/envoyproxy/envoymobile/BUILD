@@ -10,9 +10,10 @@ android_artifacts(
     android_library = ":envoy_lib",
     archive_name = "envoy",
     manifest = "EnvoyManifest.xml",
-    native_deps = [
-        "//library/common/jni:libenvoy_jni.so",
-    ],
+    native_deps = select({
+        "@envoy//bazel:opt_build": ["//library/common/jni:libenvoy_jni.so.debug_info"],
+        "//conditions:default": ["//library/common/jni:libenvoy_jni.so"],
+    }),
     proguard_rules = "//library:proguard_rules",
     visibility = ["//visibility:public"],
 )
@@ -60,6 +61,8 @@ envoy_mobile_kt_library(
         "StreamCallbacks.kt",
         "StreamClient.kt",
         "StreamClientImpl.kt",
+        "StreamIntel.kt",
+        "FinalStreamIntel.kt",
         "StreamPrototype.kt",
         "StringAccessor.kt",
         "Trailers.kt",

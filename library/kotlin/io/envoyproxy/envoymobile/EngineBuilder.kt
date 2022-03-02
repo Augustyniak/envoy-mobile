@@ -1,6 +1,7 @@
 package io.envoyproxy.envoymobile
 
 import io.envoyproxy.envoymobile.engine.EnvoyConfiguration
+import io.envoyproxy.envoymobile.engine.EnvoyConfiguration.TrustChainVerification
 import io.envoyproxy.envoymobile.engine.EnvoyEngine
 import io.envoyproxy.envoymobile.engine.EnvoyEngineImpl
 import io.envoyproxy.envoymobile.engine.EnvoyNativeFilterConfig
@@ -21,8 +22,12 @@ open class EngineBuilder(
 ) {
   protected var onEngineRunning: (() -> Unit) = {}
   protected var logger: ((String) -> Unit)? = null
-  private var engineType: () -> EnvoyEngine = { EnvoyEngineImpl(onEngineRunning, logger) }
+  protected var eventTracker: ((Map<String, String>) -> Unit)? = null
+  private var engineType: () -> EnvoyEngine = {
+    EnvoyEngineImpl(onEngineRunning, logger, eventTracker)
+  }
   private var logLevel = LogLevel.INFO
+  private var adminInterfaceEnabled = false
   private var grpcStatsDomain: String? = null
   private var statsDPort: Int? = null
   private var connectTimeoutSeconds = 30
@@ -31,10 +36,18 @@ open class EngineBuilder(
   private var dnsFailureRefreshSecondsMax = 10
   private var dnsQueryTimeoutSeconds = 25
   private var dnsPreresolveHostnames = "[]"
+  private var dnsFallbackNameservers = listOf<String>()
+  private var dnsFilterUnroutableFamilies = false
+  private var enableHappyEyeballs = false
+  private var enableInterfaceBinding = false
+  private var h2ConnectionKeepaliveIdleIntervalMilliseconds = 100000000
+  private var h2ConnectionKeepaliveTimeoutSeconds = 10
   private var statsFlushSeconds = 60
   private var streamIdleTimeoutSeconds = 15
+  private var perTryIdleTimeoutSeconds = 15
   private var appVersion = "unspecified"
   private var appId = "unspecified"
+  private var trustChainVerification = TrustChainVerification.VERIFY_TRUST_CHAIN
   private var virtualClusters = "[]"
   private var platformFilterChain = mutableListOf<EnvoyHTTPFilterFactory>()
   private var nativeFilterChain = mutableListOf<EnvoyNativeFilterConfig>()
@@ -145,6 +158,80 @@ open class EngineBuilder(
   }
 
   /**
+   * Add a list of IP addresses to use as fallback DNS name servers.
+   *
+   * @param dnsFallbackNameservers addresses to use.
+   *
+   * @return this builder.
+   */
+  fun addDNSFallbackNameservers(dnsFallbackNameservers: List<String>): EngineBuilder {
+    this.dnsFallbackNameservers = dnsFallbackNameservers
+    return this
+  }
+
+  /**
+   * Specify whether to filter unroutable IP families during DNS resolution or not.
+   *
+   * @param dnsFilterUnroutableFamilies whether to filter or not.
+   *
+   * @return this builder.
+   */
+  fun enableDNSFilterUnroutableFamilies(dnsFilterUnroutableFamilies: Boolean): EngineBuilder {
+    this.dnsFilterUnroutableFamilies = dnsFilterUnroutableFamilies
+    return this
+  }
+
+  /**
+   * Specify whether to use Happy Eyeballs when multiple IP stacks may be supported.
+   *
+   * @param enableHappyEyeballs whether to enable RFC 6555 handling for IPv4/IPv6.
+   *
+   * @return This builder.
+   */
+  fun enableHappyEyeballs(enableHappyEyeballs: Boolean): EngineBuilder {
+    this.enableHappyEyeballs = enableHappyEyeballs
+    return this
+  }
+
+  /**
+   * Specify whether sockets may attempt to bind to a specific interface, based on network
+   * conditions.
+   *
+   * @param enableInterfaceBinding whether to allow interface binding.
+   *
+   * @return This builder.
+   */
+  fun enableInterfaceBinding(enableInterfaceBinding: Boolean): EngineBuilder {
+    this.enableInterfaceBinding = enableInterfaceBinding
+    return this
+  }
+
+  /**
+   * Add a rate at which to ping h2 connections on new stream creation if the connection has
+   * sat idle.
+   *
+   * @param h2ConnectionKeepaliveIdleIntervalMilliseconds rate in milliseconds.
+   *
+   * @return this builder.
+   */
+  fun addH2ConnectionKeepaliveIdleIntervalMilliseconds(idleIntervalMs: Int): EngineBuilder {
+    this.h2ConnectionKeepaliveIdleIntervalMilliseconds = idleIntervalMs
+    return this
+  }
+
+  /**
+   * Add a rate at which to timeout h2 pings.
+   *
+   * @param h2ConnectionKeepaliveTimeoutSeconds rate in seconds to timeout h2 pings.
+   *
+   * @return this builder.
+   */
+  fun addH2ConnectionKeepaliveTimeoutSeconds(timeoutSeconds: Int): EngineBuilder {
+    this.h2ConnectionKeepaliveTimeoutSeconds = timeoutSeconds
+    return this
+  }
+
+  /**
    * Add an interval at which to flush Envoy stats.
    *
    * @param statsFlushSeconds interval at which to flush Envoy stats.
@@ -165,6 +252,18 @@ open class EngineBuilder(
    */
   fun addStreamIdleTimeoutSeconds(streamIdleTimeoutSeconds: Int): EngineBuilder {
     this.streamIdleTimeoutSeconds = streamIdleTimeoutSeconds
+    return this
+  }
+
+  /**
+   * Add a custom per try idle timeout for HTTP streams. Defaults to 15 seconds.
+   *
+   * @param perTryIdleTimeoutSeconds per try idle timeout for HTTP streams.
+   *
+   * @return this builder.
+   */
+  fun addPerTryIdleTimeoutSeconds(perTryIdleTimeoutSeconds: Int): EngineBuilder {
+    this.perTryIdleTimeoutSeconds = perTryIdleTimeoutSeconds
     return this
   }
 
@@ -237,6 +336,13 @@ open class EngineBuilder(
   }
 
   /**
+   * Set event tracker for the engine to call when it emits an event.
+   */
+  fun setEventTracker(eventTracker: (Map<String, String>) -> Unit): EngineBuilder {
+    this.eventTracker = eventTracker
+    return this
+  }
+  /**
    * Add a string accessor to this Envoy Client.
    *
    * @param name the name of the accessor.
@@ -274,6 +380,18 @@ open class EngineBuilder(
   }
 
   /**
+   * Set how the TrustChainVerification must be handled.
+   *
+   * @param trustChainVerification whether to mute TLS Cert verification - intended for testing
+   *
+   * @return this builder.
+   */
+  fun setTrustChainVerification(trustChainVerification: TrustChainVerification): EngineBuilder {
+    this.trustChainVerification = trustChainVerification
+    return this
+  }
+
+  /**
    * Add virtual cluster configuration.
    *
    * @param virtualClusters the JSON configuration string for virtual clusters.
@@ -286,21 +404,54 @@ open class EngineBuilder(
   }
 
   /**
+   * Enable admin interface on 127.0.0.1:9901 address. Admin interface is intended to be
+   * used for development/debugging purposes only. Enabling it in production may open
+   * your app to security vulnerabilities.
+   *
+   * @return this builder.
+   */
+  fun enableAdminInterface(): EngineBuilder {
+    this.adminInterfaceEnabled = true
+    return this
+  }
+
+  /**
    * Builds and runs a new Engine instance with the provided configuration.
    *
    * @return A new instance of Envoy.
    */
+  @Suppress("LongMethod")
   fun build(): Engine {
     return when (configuration) {
       is Custom -> {
         EngineImpl(
           engineType(),
           EnvoyConfiguration(
-            grpcStatsDomain, statsDPort, connectTimeoutSeconds,
-            dnsRefreshSeconds, dnsFailureRefreshSecondsBase, dnsFailureRefreshSecondsMax,
+            adminInterfaceEnabled,
+            grpcStatsDomain,
+            statsDPort,
+            connectTimeoutSeconds,
+            dnsRefreshSeconds,
+            dnsFailureRefreshSecondsBase,
+            dnsFailureRefreshSecondsMax,
             dnsQueryTimeoutSeconds,
-            dnsPreresolveHostnames, statsFlushSeconds, streamIdleTimeoutSeconds, appVersion, appId,
-            virtualClusters, nativeFilterChain, platformFilterChain, stringAccessors
+            dnsPreresolveHostnames,
+            dnsFallbackNameservers,
+            dnsFilterUnroutableFamilies,
+            enableHappyEyeballs,
+            enableInterfaceBinding,
+            h2ConnectionKeepaliveIdleIntervalMilliseconds,
+            h2ConnectionKeepaliveTimeoutSeconds,
+            statsFlushSeconds,
+            streamIdleTimeoutSeconds,
+            perTryIdleTimeoutSeconds,
+            appVersion,
+            appId,
+            trustChainVerification,
+            virtualClusters,
+            nativeFilterChain,
+            platformFilterChain,
+            stringAccessors
           ),
           configuration.yaml,
           logLevel
@@ -310,11 +461,31 @@ open class EngineBuilder(
         EngineImpl(
           engineType(),
           EnvoyConfiguration(
-            grpcStatsDomain, statsDPort, connectTimeoutSeconds,
-            dnsRefreshSeconds, dnsFailureRefreshSecondsBase, dnsFailureRefreshSecondsMax,
+            adminInterfaceEnabled,
+            grpcStatsDomain,
+            statsDPort,
+            connectTimeoutSeconds,
+            dnsRefreshSeconds,
+            dnsFailureRefreshSecondsBase,
+            dnsFailureRefreshSecondsMax,
             dnsQueryTimeoutSeconds,
-            dnsPreresolveHostnames, statsFlushSeconds, streamIdleTimeoutSeconds, appVersion, appId,
-            virtualClusters, nativeFilterChain, platformFilterChain, stringAccessors
+            dnsPreresolveHostnames,
+            dnsFallbackNameservers,
+            dnsFilterUnroutableFamilies,
+            enableHappyEyeballs,
+            enableInterfaceBinding,
+            h2ConnectionKeepaliveIdleIntervalMilliseconds,
+            h2ConnectionKeepaliveTimeoutSeconds,
+            statsFlushSeconds,
+            streamIdleTimeoutSeconds,
+            perTryIdleTimeoutSeconds,
+            appVersion,
+            appId,
+            trustChainVerification,
+            virtualClusters,
+            nativeFilterChain,
+            platformFilterChain,
+            stringAccessors
           ),
           logLevel
         )

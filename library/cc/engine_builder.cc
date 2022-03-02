@@ -8,12 +8,12 @@
 namespace Envoy {
 namespace Platform {
 
-EngineBuilder::EngineBuilder(std::string config_template) : config_template_(config_template) {}
+EngineBuilder::EngineBuilder(std::string config_template)
+    : callbacks_(std::make_shared<EngineCallbacks>()), config_template_(config_template) {}
 EngineBuilder::EngineBuilder() : EngineBuilder(std::string(config_template)) {}
 
 EngineBuilder& EngineBuilder::addLogLevel(LogLevel log_level) {
   this->log_level_ = log_level;
-  this->callbacks_ = std::make_shared<EngineCallbacks>();
   return *this;
 }
 
@@ -54,6 +54,19 @@ EngineBuilder::addDnsPreresolveHostnames(const std::string& dns_preresolve_hostn
   return *this;
 }
 
+EngineBuilder& EngineBuilder::addH2ConnectionKeepaliveIdleIntervalMilliseconds(
+    int h2_connection_keepalive_idle_interval_milliseconds) {
+  this->h2_connection_keepalive_idle_interval_milliseconds_ =
+      h2_connection_keepalive_idle_interval_milliseconds;
+  return *this;
+}
+
+EngineBuilder&
+EngineBuilder::addH2ConnectionKeepaliveTimeoutSeconds(int h2_connection_keepalive_timeout_seconds) {
+  this->h2_connection_keepalive_timeout_seconds_ = h2_connection_keepalive_timeout_seconds;
+  return *this;
+}
+
 EngineBuilder& EngineBuilder::addStatsFlushSeconds(int stats_flush_seconds) {
   this->stats_flush_seconds_ = stats_flush_seconds;
   return *this;
@@ -87,6 +100,14 @@ std::string EngineBuilder::generateConfigStr() {
       {"dns_preresolve_hostnames", this->dns_preresolve_hostnames_},
       {"dns_refresh_rate", fmt::format("{}s", this->dns_refresh_seconds_)},
       {"dns_query_timeout", fmt::format("{}s", this->dns_query_timeout_seconds_)},
+      {"dns_resolver_name", "envoy.network.dns_resolver.cares"},
+      {"dns_resolver_config",
+       "{\"@type\":\"type.googleapis.com/"
+       "envoy.extensions.network.dns_resolver.cares.v3.CaresDnsResolverConfig\"}"},
+      {"h2_connection_keepalive_idle_interval",
+       fmt::format("{}s", this->h2_connection_keepalive_idle_interval_milliseconds_ / 1000.0)},
+      {"h2_connection_keepalive_timeout",
+       fmt::format("{}s", this->h2_connection_keepalive_timeout_seconds_)},
       {
           "metadata",
           fmt::format("{{ device_os: {}, app_version: {}, app_id: {} }}", this->device_os_,
@@ -95,6 +116,7 @@ std::string EngineBuilder::generateConfigStr() {
       {"stats_domain", this->stats_domain_},
       {"stats_flush_interval", fmt::format("{}s", this->stats_flush_seconds_)},
       {"stream_idle_timeout", fmt::format("{}s", this->stream_idle_timeout_seconds_)},
+      {"per_try_idle_timeout", fmt::format("{}s", this->per_try_idle_timeout_seconds_)},
       {"virtual_clusters", this->virtual_clusters_},
   };
 
@@ -120,8 +142,11 @@ EngineSharedPtr EngineBuilder::build() {
   null_logger.release = envoy_noop_const_release;
   null_logger.context = nullptr;
 
+  envoy_event_tracker null_tracker{};
+
   auto config_str = this->generateConfigStr();
-  auto envoy_engine = init_engine(this->callbacks_->asEnvoyEngineCallbacks(), null_logger);
+  auto envoy_engine =
+      init_engine(this->callbacks_->asEnvoyEngineCallbacks(), null_logger, null_tracker);
   run_engine(envoy_engine, config_str.c_str(), logLevelToString(this->log_level_).c_str());
 
   // we can't construct via std::make_shared

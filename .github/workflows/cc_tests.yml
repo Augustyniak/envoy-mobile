@@ -10,12 +10,14 @@ jobs:
   cctests:
     name: cc_tests
     runs-on: ubuntu-18.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     container:
-      image: envoyproxy/envoy-build-ubuntu:e33c93e6d79804bf95ff80426d10bdcc9096c785
+      image: envoyproxy/envoy-build-ubuntu:8ca107a75ee98b255aa59db2ab40fd0800a3ce99
     steps:
       - uses: actions/checkout@v1
         with:
           submodules: true
-      - name: 'Run tests'
-        run: bazel test --action_env=LD_LIBRARY_PATH --test_output=all //test/cc/...
+      - env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: 'Run tests'
+        run: ./bazelw test --action_env=LD_LIBRARY_PATH --test_output=all --config=remote-ci-linux --remote_header="Authorization=Bearer $GITHUB_TOKEN" //test/cc/...

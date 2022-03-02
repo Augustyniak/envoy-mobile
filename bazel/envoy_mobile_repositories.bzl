@@ -1,3 +1,5 @@
+load("@bazel_gazelle//:deps.bzl", "go_repository")
+load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file", "http_jar")
 
 def envoy_mobile_repositories():
@@ -8,14 +10,44 @@ def envoy_mobile_repositories():
         urls = ["https://github.com/google/bazel-common/archive/413b433b91f26dbe39cdbc20f742ad6555dd1e27.zip"],
     )
 
+    # Uses PGV that includes the CC NOP template to disable validation.
+    # TODO(fz): Remove this once PGV is updated on envoy
+    override_pgv()
+
     upstream_envoy_overrides()
     swift_repos()
     kotlin_repos()
     android_repos()
     python_repos()
 
+def override_pgv():
+    go_repository(
+        name = "com_github_lyft_protoc_gen_star",
+        importpath = "github.com/lyft/protoc-gen-star",
+        sum = "h1:xOpFu4vwmIoUeUrRuAtdCrZZymT/6AkW/bsUWA506Fo=",
+        version = "v0.6.0",
+    )
+
+    git_repository(
+        name = "com_envoyproxy_protoc_gen_validate",
+        commit = "79071f0f8b04188b297a0517a6e55b2d3641ab5a",
+        remote = "https://github.com/envoyproxy/protoc-gen-validate"
+    )
+
 def upstream_envoy_overrides():
-    # Workaround old NDK version breakages https://github.com/lyft/envoy-mobile/issues/934
+    # Workaround due to a Detekt version compatibility with protobuf: https://github.com/envoyproxy/envoy-mobile/issues/1869
+    http_archive(
+        name = "com_google_protobuf",
+        patch_args = ["-p1"],
+        patches = [
+            "@envoy_mobile//bazel:protobuf.patch",
+        ],
+        sha256 = "d7371dc2d46fddac1af8cb27c0394554b068768fc79ecaf5be1a1863e8ff3392",
+        strip_prefix = "protobuf-3.16.0",
+        urls = ["https://github.com/protocolbuffers/protobuf/releases/download/v3.16.0/protobuf-all-3.16.0.tar.gz"],
+    )
+
+    # Workaround old NDK version breakages https://github.com/envoyproxy/envoy-mobile/issues/934
     http_archive(
         name = "com_github_libevent_libevent",
         urls = ["https://github.com/libevent/libevent/archive/0d7d85c2083f7a4c9efe01c061486f332b576d28.tar.gz"],
@@ -26,15 +58,15 @@ def upstream_envoy_overrides():
 
     # Patch upstream Abseil to prevent Foundation dependency from leaking into Android builds.
     # Workaround for https://github.com/abseil/abseil-cpp/issues/326.
-    # TODO: Should be removed in https://github.com/lyft/envoy-mobile/issues/136 once rules_android
+    # TODO: Should be removed in https://github.com/envoyproxy/envoy-mobile/issues/136 once rules_android
     # supports platform toolchains.
     http_archive(
         name = "com_google_absl",
         patches = ["@envoy_mobile//bazel:abseil.patch"],
-        sha256 = "635367c5cac4bbab95d0485ba9e68fa422546b06ce050190c99be7e23aba3ce3",
-        strip_prefix = "abseil-cpp-8f1c34a77a2ba04512b7f9cbc6013d405e6a0b31",
-        # 2020-08-08
-        urls = ["https://github.com/abseil/abseil-cpp/archive/8f1c34a77a2ba04512b7f9cbc6013d405e6a0b31.tar.gz"],
+        sha256 = "2e4ace2ed32a4ccfd29e856ad72b4fd1eae2ec060d3ba8646857fa170d6e8269",
+        strip_prefix = "abseil-cpp-17c954d90d5661e27db8fc5f086085690a8372d9",
+        # 2021-06-03
+        urls = ["https://github.com/abseil/abseil-cpp/archive/17c954d90d5661e27db8fc5f086085690a8372d9.tar.gz"],
     )
 
     # This should be kept in sync with Envoy itself, we just need to apply this patch
@@ -42,9 +74,9 @@ def upstream_envoy_overrides():
     http_archive(
         name = "boringssl",
         patches = ["@envoy_mobile//bazel:boringssl.patch"],
-        sha256 = "d78f7b11b8665feea1b6def8e6f235ad8671db8de950f5429f1bf2b3503b3894",
-        strip_prefix = "boringssl-b049eae83d25977661556dcd913b35fbafb3a93a",
-        urls = ["https://github.com/google/boringssl/archive/b049eae83d25977661556dcd913b35fbafb3a93a.tar.gz"],
+        sha256 = "579cb415458e9f3642da0a39a72f79fdfe6dc9c1713b3a823f1e276681b9703e",
+        strip_prefix = "boringssl-648cbaf033401b7fe7acdce02f275b06a88aab5c",
+        urls = ["https://github.com/google/boringssl/archive/648cbaf033401b7fe7acdce02f275b06a88aab5c.tar.gz"],
     )
 
     # Envoy uses rules_python v0.1.0, which does not include tooling for packaging Python.  The
@@ -60,23 +92,24 @@ def upstream_envoy_overrides():
 def swift_repos():
     http_archive(
         name = "build_bazel_rules_apple",
-        sha256 = "747d30a8d96e0f4d093c55ebcdc07ac5ef2529c7aa5c41b45788a36ca3a4cb05",
-        strip_prefix = "rules_apple-8b42998e2086325c3290f4e68752a50cf077fb92",
-        url = "https://github.com/bazelbuild/rules_apple/archive/8b42998e2086325c3290f4e68752a50cf077fb92.tar.gz",
+        sha256 = "b3f41da1a26e03250575b554c55a56b0b1f5b394192e2ca202f74d7c4c6670e5",
+        strip_prefix = "rules_apple-d1d40821dc932ee488eb22c0b9712e26f39c04fa",
+        url = "https://github.com/bazelbuild/rules_apple/archive/d1d40821dc932ee488eb22c0b9712e26f39c04fa.tar.gz",
     )
 
     http_archive(
         name = "build_bazel_rules_swift",
-        sha256 = "a228a8e41fdc165a2c55924b728c466e0086f3e638a05d6da98aa6222cbb19c1",
-        url = "https://github.com/bazelbuild/rules_swift/releases/download/0.16.1/rules_swift.0.16.1.tar.gz",
+        sha256 = "a85f0cb6a0d6a8c1165073418de28b202bc98f58c4c080bc57faeb63a2d7eee8",
+        strip_prefix = "rules_swift-a81f40700f1ba45034465a82673f46bd2631be62",
+        url = "https://github.com/bazelbuild/rules_swift/archive/a81f40700f1ba45034465a82673f46bd2631be62.tar.gz",
     )
 
 def kotlin_repos():
     http_archive(
         name = "rules_jvm_external",
-        sha256 = "1bbf2e48d07686707dd85357e9a94da775e1dbd7c464272b3664283c9c716d26",
-        strip_prefix = "rules_jvm_external-2.10",
-        url = "https://github.com/bazelbuild/rules_jvm_external/archive/2.10.zip",
+        sha256 = "f36441aa876c4f6427bfb2d1f2d723b48e9d930b62662bf723ddfb8fc80f0140",
+        strip_prefix = "rules_jvm_external-4.1",
+        url = "https://github.com/bazelbuild/rules_jvm_external/archive/4.1.zip",
     )
 
     http_archive(
@@ -113,14 +146,6 @@ def kotlin_repos():
         urls = ["https://github.com/rules-proto-grpc/rules_proto_grpc/archive/0.2.0.tar.gz"],
     )
 
-    # Dokka 0.10.0 introduced a bug which makes the CLI tool error out:
-    # https://github.com/Kotlin/dokka/issues/942
-    http_jar(
-        name = "kotlin_dokka",
-        sha256 = "4c73eee92dd652ea8e2afd7b20732cf863d4938a30f634d12c88fe64def89fd8",
-        url = "https://github.com/Kotlin/dokka/releases/download/0.9.18/dokka-fatjar-0.9.18.jar",
-    )
-
     http_file(
         name = "kotlin_formatter",
         executable = 1,
@@ -138,7 +163,7 @@ def kotlin_repos():
 def android_repos():
     http_archive(
         name = "build_bazel_rules_android",
-        urls = ["https://github.com/bazelbuild/rules_android/archive/v0.1.1.zip"],
+        urls = ["https://github.com/bazelbuild/rules_android/archive/refs/tags/v0.1.1.zip"],
         sha256 = "cd06d15dd8bb59926e4d65f9003bfc20f9da4b2519985c27e190cddc8b7a7806",
         strip_prefix = "rules_android-0.1.1",
     )

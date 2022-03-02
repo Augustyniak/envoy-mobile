@@ -1,6 +1,7 @@
 package io.envoyproxy.envoymobile.engine;
 
 import android.content.Context;
+import io.envoyproxy.envoymobile.engine.types.EnvoyEventTracker;
 import io.envoyproxy.envoymobile.engine.types.EnvoyHTTPCallbacks;
 import io.envoyproxy.envoymobile.engine.types.EnvoyLogger;
 import io.envoyproxy.envoymobile.engine.types.EnvoyOnEngineRunning;
@@ -16,15 +17,15 @@ public class AndroidEngineImpl implements EnvoyEngine {
    * @param runningCallback Called when the engine finishes its async startup and begins running.
    */
   public AndroidEngineImpl(Context context, EnvoyOnEngineRunning runningCallback,
-                           EnvoyLogger logger) {
-    this.envoyEngine = new EnvoyEngineImpl(runningCallback, logger);
+                           EnvoyLogger logger, EnvoyEventTracker eventTracker) {
+    this.envoyEngine = new EnvoyEngineImpl(runningCallback, logger, eventTracker);
     AndroidJniLibrary.load(context);
     AndroidNetworkMonitor.load(context, envoyEngine);
   }
 
   @Override
-  public EnvoyHTTPStream startStream(EnvoyHTTPCallbacks callbacks) {
-    return envoyEngine.startStream(callbacks);
+  public EnvoyHTTPStream startStream(EnvoyHTTPCallbacks callbacks, boolean explicitFlowControl) {
+    return envoyEngine.startStream(callbacks, explicitFlowControl);
   }
 
   public int runWithTemplate(String configurationYAML, EnvoyConfiguration envoyConfiguration,
@@ -45,6 +46,11 @@ public class AndroidEngineImpl implements EnvoyEngine {
   @Override
   public void flushStats() {
     envoyEngine.flushStats();
+  }
+
+  @Override
+  public String dumpStats() {
+    return envoyEngine.dumpStats();
   }
 
   @Override
@@ -80,5 +86,10 @@ public class AndroidEngineImpl implements EnvoyEngine {
   @Override
   public int registerStringAccessor(String accessorName, EnvoyStringAccessor accessor) {
     return envoyEngine.registerStringAccessor(accessorName, accessor);
+  }
+
+  @Override
+  public void drainConnections() {
+    envoyEngine.drainConnections();
   }
 }

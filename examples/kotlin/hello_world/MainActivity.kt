@@ -47,13 +47,21 @@ class MainActivity : Activity() {
 
     engine = AndroidEngineBuilder(application)
       .addLogLevel(LogLevel.DEBUG)
+      .enableInterfaceBinding(true)
       .addPlatformFilter(::DemoFilter)
       .addPlatformFilter(::BufferDemoFilter)
       .addPlatformFilter(::AsyncDemoFilter)
       .addNativeFilter("envoy.filters.http.buffer", "{\"@type\":\"type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer\",\"max_request_bytes\":5242880}")
-      .addNativeFilter("envoy.filters.http.test_accessor", "{\"@type\":\"type.googleapis.com/envoymobile.extensions.filters.http.test_accessor.TestAccessor\",\"accessor_name\":\"demo-accessor\",\"expected_string\":\"PlatformString\"}")
       .addStringAccessor("demo-accessor", { "PlatformString" })
       .setOnEngineRunning { Log.d("MainActivity", "Envoy async internal setup completed") }
+      .setEventTracker({
+        for (entry in it.entries) {
+          Log.d("MainActivity", "Event emitted: ${entry.key}, ${entry.value}")
+        }
+      })
+      .setLogger {
+        Log.d("MainActivity", it)
+      }
       .build()
 
     recyclerView = findViewById(R.id.recycler_view) as RecyclerView
@@ -104,7 +112,7 @@ class MainActivity : Activity() {
     engine
       .streamClient()
       .newStreamPrototype()
-      .setOnResponseHeaders { responseHeaders, _ ->
+      .setOnResponseHeaders { responseHeaders, _, _ ->
         val status = responseHeaders.httpStatus ?: 0L
         val message = "received headers with status $status"
 
@@ -127,7 +135,7 @@ class MainActivity : Activity() {
           recyclerView.post { viewAdapter.add(Failure(message)) }
         }
       }
-      .setOnError { error ->
+      .setOnError { error, _ ->
         val attemptCount = error.attemptCount ?: -1
         val message = "failed with error after $attemptCount attempts: ${error.message}"
         Log.d("MainActivity", message)

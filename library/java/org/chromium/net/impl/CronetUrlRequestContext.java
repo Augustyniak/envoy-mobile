@@ -5,8 +5,8 @@ import static android.os.Process.THREAD_PRIORITY_MORE_FAVORABLE;
 
 import android.os.ConditionVariable;
 import androidx.annotation.GuardedBy;
-import io.envoyproxy.envoymobile.AndroidEngineBuilder;
-import io.envoyproxy.envoymobile.Engine;
+import androidx.annotation.VisibleForTesting;
+import io.envoyproxy.envoymobile.engine.EnvoyEngine;
 import java.io.IOException;
 import java.net.Proxy;
 import java.net.URL;
@@ -18,12 +18,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.chromium.net.BidirectionalStream;
@@ -52,7 +47,7 @@ public final class CronetUrlRequestContext extends CronetEngineBase {
   private final ConditionVariable mInitCompleted = new ConditionVariable(false);
   private final AtomicInteger mActiveRequestCount = new AtomicInteger(0);
 
-  @GuardedBy("mLock") private Engine mEngine;
+  @GuardedBy("mLock") private EnvoyEngine mEngine;
   /**
    * This field is accessed without synchronization, but only for the purposes of reference
    * equality comparison with other threads. If such a comparison is performed on the network
@@ -63,10 +58,8 @@ public final class CronetUrlRequestContext extends CronetEngineBase {
   private Thread mNetworkThread;
 
   private final String mUserAgent;
-  private final ExecutorService mExecutorService;
   private final CronetEngineBuilderImpl mBuilder;
-  private final AtomicReference<Runnable> mInitializationCompleter =
-      new AtomicReference<Runnable>();
+  private final AtomicReference<Runnable> mInitializationCompleter = new AtomicReference<>();
 
   /**
    * Locks operations on the list of RequestFinishedInfo.Listeners, because operations can happen
@@ -78,7 +71,7 @@ public final class CronetUrlRequestContext extends CronetEngineBase {
   private final Map<RequestFinishedInfo.Listener, VersionSafeCallbacks.RequestFinishedInfoListener>
       mFinishedListenerMap = new HashMap<>();
 
-  public CronetUrlRequestContext(CronetEngineBuilderImpl builder) {
+  public CronetUrlRequestContext(NativeCronetEngineBuilderImpl builder) {
     mBuilder = builder;
     // On android, all background threads (and all threads that are part
     // of background processes) are put in a cgroup that is allowed to
@@ -90,30 +83,21 @@ public final class CronetUrlRequestContext extends CronetEngineBase {
         builder.threadPriority(THREAD_PRIORITY_BACKGROUND + THREAD_PRIORITY_MORE_FAVORABLE);
     mUserAgent = builder.getUserAgent();
     synchronized (mLock) {
-      mEngine = new AndroidEngineBuilder(builder.getContext())
-                    .addLogLevel(builder.getLogLevel())
-                    .setOnEngineRunning(() -> {
-                      mNetworkThread = Thread.currentThread();
-                      mInitCompleted.open();
-                      Runnable taskToExecuteWhenInitializationIsCompleted =
-                          mInitializationCompleter.getAndSet(() -> {});
-                      if (taskToExecuteWhenInitializationIsCompleted != null) {
-                        taskToExecuteWhenInitializationIsCompleted.run();
-                      }
-                      return null;
-                    })
-                    .build();
+      mEngine = builder.createEngine(() -> {
+        mNetworkThread = Thread.currentThread();
+        android.os.Process.setThreadPriority(threadPriority);
+        mInitCompleted.open();
+        Runnable taskToExecuteWhenInitializationIsCompleted =
+            mInitializationCompleter.getAndSet(() -> {});
+        if (taskToExecuteWhenInitializationIsCompleted != null) {
+          taskToExecuteWhenInitializationIsCompleted.run();
+        }
+        return null;
+      });
     }
-    mExecutorService =
-        new ThreadPoolExecutor(2, 10, 50, TimeUnit.SECONDS, new LinkedBlockingQueue<>(),
-                               r -> Executors.defaultThreadFactory().newThread(() -> {
-                                 Thread.currentThread().setName("EnvoyCronetEngine");
-                                 android.os.Process.setThreadPriority(threadPriority);
-                                 r.run();
-                               }));
   }
 
-  public Engine getEnvoyEngine() {
+  public EnvoyEngine getEnvoyEngine() {
     synchronized (mLock) {
       if (mEngine == null) {
         throw new IllegalStateException("Engine is shut down.");
@@ -141,9 +125,9 @@ public final class CronetUrlRequestContext extends CronetEngineBase {
                 boolean trafficStatsTagSet, int trafficStatsTag, boolean trafficStatsUidSet,
                 int trafficStatsUid, RequestFinishedInfo.Listener requestFinishedListener,
                 int idempotency) {
-    return new CronetUrlRequest(this, callback, mExecutorService, executor, url, mUserAgent,
-                                allowDirectExecutor, trafficStatsTagSet, trafficStatsTag,
-                                trafficStatsUidSet, trafficStatsUid);
+    return new CronetUrlRequest(this, callback, executor, url, mUserAgent, allowDirectExecutor,
+                                connectionAnnotations, trafficStatsTagSet, trafficStatsTag,
+                                trafficStatsUidSet, trafficStatsUid, requestFinishedListener);
   }
 
   @Override
@@ -194,7 +178,6 @@ public final class CronetUrlRequestContext extends CronetEngineBase {
       if (!haveRequestContextAdapter()) {
         return;
       }
-      mExecutorService.shutdown();
       mEngine.terminate();
       mEngine = null;
     }
@@ -301,6 +284,13 @@ public final class CronetUrlRequestContext extends CronetEngineBase {
    * requests.
    */
   void onRequestDestroyed() { mActiveRequestCount.decrementAndGet(); }
+
+  boolean isNetworkThread(Thread thread) { return thread == mNetworkThread; }
+
+  @VisibleForTesting
+  public boolean hasShutdown() {
+    synchronized (mLock) { return !haveRequestContextAdapter(); }
+  }
 
   @GuardedBy("mLock")
   private void checkHaveAdapter() throws IllegalStateException {

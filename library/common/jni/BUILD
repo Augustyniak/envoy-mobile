@@ -1,12 +1,14 @@
 load("//bazel:kotlin_lib.bzl", "envoy_mobile_so_to_jni_lib")
+load("//bazel:android_debug_info.bzl", "android_debug_info")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
-load("@envoy//bazel:envoy_build_system.bzl", "envoy_cc_library", "envoy_package")
+load("@envoy//bazel:envoy_build_system.bzl", "envoy_package")
+load("//bazel:envoy_mobile_test_extensions.bzl", "TEST_EXTENSIONS")
 
 licenses(["notice"])  # Apache 2
 
 envoy_package()
 
-envoy_cc_library(
+cc_library(
     name = "jni_utility_lib",
     srcs = [
         "jni_utility.cc",
@@ -17,16 +19,15 @@ envoy_cc_library(
         "jni_utility.h",
         "jni_version.h",
     ],
-    repository = "@envoy",
     deps = [
+        "//library/common/jni/import:jni_import_lib",
         "//library/common/types:c_types_lib",
         "@envoy//source/common/common:assert_lib",
     ],
 )
 
-# Main dynamic library for the Envoy Mobile aar
-cc_binary(
-    name = "libenvoy_jni.so",
+cc_library(
+    name = "envoy_jni_lib",
     srcs = [
         "android_jni_interface.cc",
         "jni_interface.cc",
@@ -35,15 +36,42 @@ cc_binary(
     linkopts = [
         "-lm",
         "-llog",
-        "-Wl,-s",
-    ],
-    linkshared = True,
+        "-ldl",
+    ] + select({
+        "@envoy//bazel:dbg_build": ["-Wl,--build-id=sha1"],
+        "//conditions:default": [],
+    }),
     deps = [
         ":jni_utility_lib",
         ":ndk_jni_support",
         "//library/common:envoy_main_interface_lib",
         "//library/common/api:c_types",
     ],
+    # We need this to ensure that we link this into the .so even though there are no code references.
+    alwayslink = True,
+)
+
+# Main dynamic library for the Envoy Mobile aar
+cc_binary(
+    name = "libenvoy_jni.so",
+    copts = ["-std=c++17"],
+    linkopts = [
+        "-lm",
+        "-llog",
+    ] + select({
+        "@envoy//bazel:dbg_build": ["-Wl,--build-id=sha1"],
+        "//conditions:default": [],
+    }),
+    linkshared = True,
+    deps = [
+        ":envoy_jni_lib",
+        "@envoy_mobile_extra_jni_deps//:extra_jni_dep",
+    ],
+)
+
+android_debug_info(
+    name = "libenvoy_jni.so.debug_info",
+    dep = "libenvoy_jni.so",
 )
 
 ## Targets for local execution
@@ -59,7 +87,6 @@ cc_binary(
     srcs = [
         "android_test_jni_interface.cc",
         "jni_interface.cc",
-        "@local_jdk//:jni_header",
     ],
     copts = ["-std=c++17"],
     linkopts = [
@@ -68,9 +95,9 @@ cc_binary(
     deps = [
         "base_java_jni_lib",
         ":java_jni_support",
-        "//bazel:jni",
         "//library/common:envoy_main_interface_lib",
         "//library/common/api:c_types",
+        "//library/common/jni/import:jni_import_lib",
     ],
 )
 
@@ -89,7 +116,10 @@ cc_binary(
         "-lm",
     ],
     linkshared = True,
-    deps = ["base_java_jni_lib"],
+    deps = [
+        "base_java_jni_lib",
+        "@envoy_mobile_extra_jni_deps//:extra_jni_dep",
+    ],
 )
 
 cc_library(
@@ -97,7 +127,6 @@ cc_library(
     srcs = [
         "jni_utility.cc",
         "jni_version.cc",
-        "@local_jdk//:jni_header",
     ],
     hdrs = [
         "jni_utility.h",
@@ -109,11 +138,11 @@ cc_library(
     ],
     deps = [
         ":java_jni_support",
-        "//bazel:jni",
+        "//library/common/jni/import:jni_import_lib",
         "//library/common:envoy_main_interface_lib",
         "//library/common/types:c_types_lib",
         "@envoy//source/common/common:assert_lib",
-    ],
+    ] + TEST_EXTENSIONS,
 )
 
 # Utility implementation for Java JNI
@@ -121,14 +150,15 @@ cc_library(
     name = "java_jni_support",
     srcs = [
         "java_jni_support.cc",
-        "@local_jdk//:jni_header",
     ],
     hdrs = ["jni_support.h"],
     copts = ["-std=c++14"],
     linkopts = [
         "-lm",
     ],
-    deps = ["//bazel:jni"],
+    deps = [
+        "//library/common/jni/import:jni_import_lib",
+    ],
 )
 
 # Utility implementation for NDK JNI
@@ -142,5 +172,8 @@ cc_library(
     linkopts = [
         "-lm",
         "-llog",
+    ],
+    deps = [
+        "//library/common/jni/import:jni_import_lib",
     ],
 )

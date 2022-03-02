@@ -25,9 +25,11 @@ envoy_stream_t init_stream(envoy_engine_t engine);
  * can occur.
  * @param stream, handle to the stream to be started.
  * @param callbacks, the callbacks that will run the stream callbacks.
+ * @param explicit_flow_control, whether to enable explicit flow control on the response stream.
  * @return envoy_stream, with a stream handle and a success status, or a failure status.
  */
-envoy_status_t start_stream(envoy_stream_t stream, envoy_http_callbacks callbacks);
+envoy_status_t start_stream(envoy_stream_t stream, envoy_http_callbacks callbacks,
+                            bool explicit_flow_control);
 
 /**
  * Send headers over an open HTTP stream. This method can be invoked once and needs to be called
@@ -38,6 +40,13 @@ envoy_status_t start_stream(envoy_stream_t stream, envoy_http_callbacks callback
  * @return envoy_status_t, the resulting status of the operation.
  */
 envoy_status_t send_headers(envoy_stream_t stream, envoy_headers headers, bool end_stream);
+
+/**
+ * Notify the stream that the caller is ready to receive more data from the response stream. Only
+ * used in explicit flow control mode.
+ * @param bytes_to_read, the quantity of data the caller is prepared to process.
+ */
+envoy_status_t read_data(envoy_stream_t stream, size_t bytes_to_read);
 
 /**
  * Send data over an open HTTP stream. This method can be invoked multiple times.
@@ -142,6 +151,14 @@ envoy_status_t record_histogram_value(envoy_engine_t engine, const char* element
 void flush_stats(envoy_engine_t engine);
 
 /**
+ * Collect a snapshot of all active stats.
+ * Note: this function may block for some time while collecting stats.
+ * @param engine, the engine whose stats to dump.
+ * @param data, out parameter to populate with stats data.
+ */
+envoy_status_t dump_stats(envoy_engine_t engine, envoy_data* data);
+
+/**
  * Statically register APIs leveraging platform libraries.
  * Warning: Must be completed before any calls to run_engine().
  * @param name, identifier of the platform API
@@ -154,9 +171,11 @@ envoy_status_t register_platform_api(const char* name, void* api);
  * Initialize an engine for handling network streams.
  * @param callbacks, the callbacks that will run the engine callbacks.
  * @param logger, optional callbacks to handle logging.
+ * @param event_tracker, an event tracker for the emission of events.
  * @return envoy_engine_t, handle to the underlying engine.
  */
-envoy_engine_t init_engine(envoy_engine_callbacks callbacks, envoy_logger logger);
+envoy_engine_t init_engine(envoy_engine_callbacks callbacks, envoy_logger logger,
+                           envoy_event_tracker event_tracker);
 
 /**
  * External entry point for library.
@@ -167,7 +186,19 @@ envoy_engine_t init_engine(envoy_engine_callbacks callbacks, envoy_logger logger
  */
 envoy_status_t run_engine(envoy_engine_t engine, const char* config, const char* log_level);
 
+/**
+ * Terminate an engine. Further interactions with a terminated engine, or streams created by a
+ * terminated engine is illegal.
+ * @param engine, handle to the engine to terminate.
+ */
 void terminate_engine(envoy_engine_t engine);
+
+/**
+ * Drain all upstream connections associated with an engine
+ * @param engine, handle to the engine to drain.
+ * @return envoy_status_t, the resulting status of the operation.
+ */
+envoy_status_t drain_connections(envoy_engine_t engine);
 
 #ifdef __cplusplus
 } // functions

@@ -1,7 +1,6 @@
 #pragma once
 
-#include <jni.h>
-
+#include "library/common/jni/import/jni_import.h"
 #include "library/common/types/c_types.h"
 
 // NOLINT(namespace-envoy)
@@ -22,6 +21,8 @@ int unbox_integer(JNIEnv* env, jobject boxedInteger);
 
 envoy_data array_to_native_data(JNIEnv* env, jbyteArray j_data);
 
+envoy_data array_to_native_data(JNIEnv* env, jbyteArray j_data, size_t data_length);
+
 /**
  * Utility function that copies envoy_data to jbyteArray.
  *
@@ -32,9 +33,26 @@ envoy_data array_to_native_data(JNIEnv* env, jbyteArray j_data);
  */
 jbyteArray native_data_to_array(JNIEnv* env, envoy_data data);
 
+jlongArray native_stream_intel_to_array(JNIEnv* env, envoy_stream_intel stream_intel);
+
+jlongArray native_final_stream_intel_to_array(JNIEnv* env,
+                                              envoy_final_stream_intel final_stream_intel);
+
+/**
+ * Utility function that copies envoy_map to a java HashMap jobject.
+ *
+ * @param env, the JNI env pointer.
+ * @param envoy_map, the source to copy from.
+ *
+ * @return jobject, copied data. It is up to the function caller to clean up memory.
+ */
+jobject native_map_to_map(JNIEnv* env, envoy_map map);
+
 jstring native_data_to_string(JNIEnv* env, envoy_data data);
 
 envoy_data buffer_to_native_data(JNIEnv* env, jobject j_data);
+
+envoy_data buffer_to_native_data(JNIEnv* env, jobject j_data, size_t data_length);
 
 envoy_data* buffer_to_native_data_ptr(JNIEnv* env, jobject j_data);
 
